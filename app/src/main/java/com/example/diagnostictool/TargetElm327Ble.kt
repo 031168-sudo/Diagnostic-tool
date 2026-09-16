@@ -42,8 +42,8 @@ class TargetElm327Ble(
     @Volatile private var running = false
     @Volatile private var found = false
     private var commandIndex = 0
-    // Only PIDs confirmed by the user's vehicle are polled.
-    // 0110 (MAF) was removed because the vehicle does not support it.
+    // Vehicle-supported PIDs only: RPM, speed, load, throttle, MAP, coolant, intake temp, voltage.
+    // 0110 (MAF) is not supported by this vehicle.
     private val commands = listOf("010C", "010D", "0104", "0111", "010B", "0105", "010F", "0142")
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -233,3 +233,5 @@ class TargetElm327Ble(
         rxCharacteristic = null
     }
 }
+
+// Force CI rebuild after the supported-PID update.
