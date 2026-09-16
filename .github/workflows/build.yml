@@ -19,3 +19,4 @@ jobs:
         with:
           name: DiagnosticTool-debug
           path: app/build/outputs/apk/debug/app-debug.apk
+
