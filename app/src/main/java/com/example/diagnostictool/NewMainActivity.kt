@@ -13,7 +13,7 @@ class NewMainActivity : AppCompatActivity() {
     private lateinit var obdValues: TextView
     private lateinit var recordButton: Button
     private lateinit var recordStatus: TextView
-    private lateinit var obd: Elm327Ble
+    private lateinit var obd: TargetElm327Ble
     private var recorder: PublicSessionRecorder? = null
     private val requestCode = 10
 
@@ -25,7 +25,7 @@ class NewMainActivity : AppCompatActivity() {
         recordButton = findViewById(R.id.record)
         recordStatus = findViewById(R.id.recordStatus)
 
-        obd = Elm327Ble(this, object : Elm327Ble.Listener {
+        obd = TargetElm327Ble(this, object : TargetElm327Ble.Listener {
             override fun onState(text: String) = runOnUiThread { status.text = text }
             override fun onData(values: ObdValues, monotonicNs: Long) {
                 runOnUiThread { obdValues.text = values.toDisplay() }
