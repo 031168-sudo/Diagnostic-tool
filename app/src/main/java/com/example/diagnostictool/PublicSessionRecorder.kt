@@ -54,15 +54,15 @@ class PublicSessionRecorder(
         pcmFile = File(privateDir, "audio.pcm")
 
         try {
-            val obd = createPublicFile("obd.csv", "text/csv")
-            obdUri = obd
-            obdWriter = writerFor(obd)
+            obdUri = createPublicFile("obd.csv", "text/csv")
+            obdWriter = writerFor(obdUri!!)
             obdWriter!!.write("relative_ms,monotonic_ns,rpm,speed_kmh,load_pct,throttle_pct,maf_gps,coolant_c,voltage_v\n")
+            obdWriter!!.flush()
 
-            val sensors = createPublicFile("sensors.csv", "text/csv")
-            sensorsUri = sensors
-            sensorsWriter = writerFor(sensors)
+            sensorsUri = createPublicFile("sensors.csv", "text/csv")
+            sensorsWriter = writerFor(sensorsUri!!)
             sensorsWriter!!.write("relative_ms,monotonic_ns,type,x,y,z\n")
+            sensorsWriter!!.flush()
         } catch (e: Exception) {
             status("Ошибка создания файлов: ${e.message}")
             return
@@ -136,6 +136,10 @@ class PublicSessionRecorder(
             obdWriter?.close(); obdWriter = null
             sensorsWriter?.close(); sensorsWriter = null
         }
+        // MediaStore files remain IS_PENDING until explicitly published. This was why
+        // the previous build showed only audio.wav and session.json in Downloads.
+        try { obdUri?.let { publish(it) } } catch (e: Exception) { status("Ошибка публикации obd.csv: ${e.message}") }
+        try { sensorsUri?.let { publish(it) } } catch (e: Exception) { status("Ошибка публикации sensors.csv: ${e.message}") }
         try { writeWavToPublic(pcmFile!!, 48_000, 1, 16) } catch (e: Exception) { status("Ошибка WAV: ${e.message}") }
         try { writeMetaFile() } catch (e: Exception) { status("Ошибка session.json: ${e.message}") }
         pcmFile?.delete()
