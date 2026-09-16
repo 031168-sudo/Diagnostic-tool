@@ -1,1 +1,0 @@
-Resources are intentionally kept minimal; the diagnostic UI is XML-based.
