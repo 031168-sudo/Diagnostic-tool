@@ -36,6 +36,9 @@ class TargetElm327Ble(
     private var writeCharacteristic: BluetoothGattCharacteristic? = null
     private var rxCharacteristic: BluetoothGattCharacteristic? = null
     private val rxBuffer = StringBuilder()
+    private val responseLock = Object()
+    private var responseText = StringBuilder()
+    private var promptReceived = false
     private val values = ObdValues()
     @Volatile private var running = false
     @Volatile private var found = false
@@ -50,7 +53,6 @@ class TargetElm327Ble(
             listener.onState("Bluetooth выключен")
             return
         }
-
         found = false
         listener.onState("Поиск BLE OBDII: $TARGET_MAC...")
         val scanner = adapter.bluetoothLeScanner
@@ -63,12 +65,8 @@ class TargetElm327Ble(
                 listener.onState("Найден OBDII $TARGET_MAC; подключение...")
                 gatt = device.connectGatt(activity, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
             }
-
-            override fun onScanFailed(errorCode: Int) {
-                listener.onState("Ошибка BLE scan: $errorCode")
-            }
+            override fun onScanFailed(errorCode: Int) { listener.onState("Ошибка BLE scan: $errorCode") }
         }
-
         scanner.startScan(callback)
         mainHandler.postDelayed({
             scanner.stopScan(callback)
@@ -97,12 +95,10 @@ class TargetElm327Ble(
             }
             var write: BluetoothGattCharacteristic? = null
             var notify: BluetoothGattCharacteristic? = null
-            for (service in g.services) {
-                for (c in service.characteristics) {
-                    val p = c.properties
-                    if (write == null && (p and (BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)) != 0) write = c
-                    if (notify == null && (p and (BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_INDICATE)) != 0) notify = c
-                }
+            for (service in g.services) for (c in service.characteristics) {
+                val p = c.properties
+                if (write == null && (p and (BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)) != 0) write = c
+                if (notify == null && (p and (BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_INDICATE)) != 0) notify = c
             }
             writeCharacteristic = write
             rxCharacteristic = notify
@@ -110,15 +106,12 @@ class TargetElm327Ble(
                 listener.onState("У OBDII $TARGET_MAC не найдена BLE UART-служба")
                 return
             }
-
             g.setCharacteristicNotification(notify, true)
             val descriptor = notify.getDescriptor(CLIENT_CONFIG_UUID)
             if (descriptor != null) {
                 descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                 g.writeDescriptor(descriptor)
-            } else {
-                startElmSession()
-            }
+            } else startElmSession()
         }
 
         @SuppressLint("MissingPermission")
@@ -130,7 +123,6 @@ class TargetElm327Ble(
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
             consume(value.toString(Charsets.US_ASCII))
         }
-
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             consume(characteristic.value.toString(Charsets.US_ASCII))
@@ -139,13 +131,14 @@ class TargetElm327Ble(
 
     @SuppressLint("MissingPermission")
     private fun startElmSession() {
-        thread(name = "elm327-init") {
-            send("ATZ"); Thread.sleep(1200)
-            send("ATE0"); Thread.sleep(300)
-            send("ATL0"); Thread.sleep(300)
-            send("ATS0"); Thread.sleep(300)
-            send("ATH0"); Thread.sleep(300)
-            send("ATSP0"); Thread.sleep(500)
+        thread(name = "elm327-session") {
+            // ELM327 replies are framed by the '>' prompt. Wait for each response before sending the next command.
+            sendAndWait("ATZ", 2500)
+            sendAndWait("ATE0", 1000)
+            sendAndWait("ATL0", 1000)
+            sendAndWait("ATS0", 1000)
+            sendAndWait("ATH0", 1000)
+            sendAndWait("ATSP0", 3000)
             running = true
             listener.onState("OBDII $TARGET_MAC готов; OBD опрашивается")
             pollLoop()
@@ -156,65 +149,66 @@ class TargetElm327Ble(
     private fun send(command: String) {
         val c = writeCharacteristic ?: return
         c.writeType = if ((c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0)
-            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-        else BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE else BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
         c.value = (command + "\r").toByteArray(Charsets.US_ASCII)
         gatt?.writeCharacteristic(c)
     }
 
+    private fun sendAndWait(command: String, timeoutMs: Long): String {
+        synchronized(responseLock) {
+            responseText = StringBuilder()
+            promptReceived = false
+            send(command)
+            val deadline = SystemClock.uptimeMillis() + timeoutMs
+            while (!promptReceived) {
+                val remaining = deadline - SystemClock.uptimeMillis()
+                if (remaining <= 0) break
+                try { responseLock.wait(remaining) } catch (_: InterruptedException) { break }
+            }
+            return responseText.toString()
+        }
+    }
+
     private fun consume(text: String) {
-        synchronized(rxBuffer) {
+        synchronized(responseLock) {
             rxBuffer.append(text)
-            var end = -1
-            while (true) {
-                val s = rxBuffer.toString()
-                val r = s.indexOf('\r')
-                val p = s.indexOf('>')
-                end = when {
-                    r >= 0 && p >= 0 -> minOf(r, p)
-                    r >= 0 -> r
-                    p >= 0 -> p
-                    else -> -1
-                }
-                if (end < 0) return
-                val line = s.substring(0, end)
-                rxBuffer.delete(0, end + 1)
-                parse(line)
+            responseText.append(text)
+            if (rxBuffer.contains('>')) {
+                promptReceived = true
+                responseLock.notifyAll()
+                rxBuffer.clear()
             }
         }
     }
 
-    private fun parse(response: String) {
-        val x = response.replace(" ", "").replace("\r", "").replace(">", "").uppercase(Locale.US)
-        var p = x.indexOf("41")
-        while (p >= 0 && p + 4 <= x.length) {
-            val payload = x.substring(p + 2)
-            val bytes = try {
-                (0 until payload.length / 2).map { Integer.parseInt(payload.substring(it * 2, it * 2 + 2), 16) }
-            } catch (_: Exception) {
-                emptyList()
-            }
-            if (bytes.isNotEmpty()) {
-                when (bytes[0]) {
-                    0x0C -> if (bytes.size >= 3) values.rpm = (bytes[1] * 256 + bytes[2]) / 4.0
-                    0x0D -> if (bytes.size >= 2) values.speed = bytes[1].toDouble()
-                    0x04 -> if (bytes.size >= 2) values.load = bytes[1] * 100.0 / 255.0
-                    0x11 -> if (bytes.size >= 2) values.throttle = bytes[1] * 100.0 / 255.0
-                    0x10 -> if (bytes.size >= 3) values.maf = (bytes[1] * 256 + bytes[2]) / 100.0
-                    0x05 -> if (bytes.size >= 2) values.coolant = bytes[1] - 40.0
-                    0x42 -> if (bytes.size >= 3) values.voltage = (bytes[1] * 256 + bytes[2]) / 1000.0
-                }
-                listener.onData(values.copy(), SystemClock.elapsedRealtimeNanos())
-                return
-            }
-            p = x.indexOf("41", p + 2)
+    private fun parseResponse(response: String, pid: Int): Boolean {
+        // Accept normal ELM output (41 0C ...) and CAN-header output (7E8 04 41 0C ...).
+        val hex = response.uppercase(Locale.US).replace(Regex("[^0-9A-F]"), "")
+        val marker = "41" + "%02X".format(Locale.US, pid)
+        val start = hex.indexOf(marker)
+        if (start < 0) return false
+        val data = hex.substring(start + marker.length)
+        fun b(i: Int): Int? = if (data.length >= i + 2) data.substring(i, i + 2).toIntOrNull(16) else null
+        when (pid) {
+            0x0C -> { val a=b(0); val c=b(2); if (a!=null&&c!=null) values.rpm=(a*256+c)/4.0 else return false }
+            0x0D -> { val a=b(0) ?: return false; values.speed=a.toDouble() }
+            0x04 -> { val a=b(0) ?: return false; values.load=a*100.0/255.0 }
+            0x11 -> { val a=b(0) ?: return false; values.throttle=a*100.0/255.0 }
+            0x10 -> { val a=b(0); val c=b(2); if(a!=null&&c!=null) values.maf=(a*256+c)/100.0 else return false }
+            0x05 -> { val a=b(0) ?: return false; values.coolant=a-40.0 }
+            0x42 -> { val a=b(0); val c=b(2); if(a!=null&&c!=null) values.voltage=(a*256+c)/1000.0 else return false }
+            else -> return false
         }
+        return true
     }
 
     private fun pollLoop() {
         while (running) {
-            send(commands[commandIndex++ % commands.size])
-            Thread.sleep(450)
+            val command = commands[commandIndex++ % commands.size]
+            val response = sendAndWait(command, 1800)
+            val pid = command.substring(2).toInt(16)
+            if (parseResponse(response, pid)) listener.onData(values.copy(), SystemClock.elapsedRealtimeNanos())
+            Thread.sleep(40)
         }
     }
 
@@ -222,9 +216,11 @@ class TargetElm327Ble(
     fun close() {
         running = false
         mainHandler.removeCallbacksAndMessages(null)
+        synchronized(responseLock) { promptReceived = true; responseLock.notifyAll() }
         gatt?.close()
         gatt = null
         writeCharacteristic = null
         rxCharacteristic = null
+        rxBuffer.clear()
     }
 }
