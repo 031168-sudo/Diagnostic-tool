@@ -1,20 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent">
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="ДИАГНОСТИКА" android:textSize="28sp" android:textStyle="bold"/>
-        <TextView android:id="@+id/currentCar" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:text="Автомобиль не выбран" android:textSize="20sp" android:textStyle="bold"/>
-        <Button android:id="@+id/cars" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="АВТОМОБИЛИ / ВЫБРАТЬ"/>
-        <Button android:id="@+id/addCar" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="+ ДОБАВИТЬ АВТОМОБИЛЬ"/>
-        <Button android:id="@+id/history" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="ИСТОРИЯ ДИАГНОСТИКИ"/>
-
-        <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="18dp" android:background="#888888"/>
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:text="Текущая диагностика" android:textSize="20sp" android:textStyle="bold"/>
-        <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="OBD: не настроен" android:textSize="16sp"/>
-        <Button android:id="@+id/connect" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="ПОДКЛЮЧИТЬ ELM327"/>
+        <TextView android:id="@+id/currentCar" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Автомобиль" android:textSize="24sp" android:textStyle="bold"/>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="8dp">
+            <Button android:id="@+id/changeCar" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Сменить"/>
+            <Button android:id="@+id/addCar" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="+ Добавить"/>
+        </LinearLayout>
+        <Button android:id="@+id/history" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="История диагностики"/>
+        <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="12dp" android:background="#888888"/>
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="Сбор информации" android:textSize="20sp" android:textStyle="bold"/>
+        <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="OBD-адаптер не подключён — запись возможна с GPS" android:textSize="16sp"/>
+        <Button android:id="@+id/connect" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="Подключить ELM327"/>
         <TextView android:id="@+id/obdValues" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="RPM: —\nSpeed: —\nLoad: —\nThrottle: —\nMAP: —\nCoolant: —\nIntake: —\nVoltage: —" android:textSize="18sp"/>
         <Button android:id="@+id/record" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="НАЧАТЬ ЗАПИСЬ"/>
-        <TextView android:id="@+id/recordStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="Запись остановлена" android:textSize="16sp"/>
-        <Button android:id="@+id/openFolder" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="ОТКРЫТЬ ЗАГРУЗКИ"/>
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="Сессия: audio.wav 48 кГц PCM16 + obd.csv + sensors.csv + session.json. В session.json сохраняется выбранный автомобиль и его параметры." android:textSize="14sp"/>
+        <TextView android:id="@+id/recordStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="Запись остановлена" android:textSize="16sp"/>
+        <Button android:id="@+id/openFolder" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="Открыть загрузки"/>
     </LinearLayout>
 </ScrollView>
