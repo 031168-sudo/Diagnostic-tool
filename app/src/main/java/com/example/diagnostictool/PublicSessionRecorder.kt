@@ -56,7 +56,7 @@ class PublicSessionRecorder(
         try {
             obdUri = createPublicFile("obd.csv", "text/csv")
             obdWriter = writerFor(obdUri!!)
-            obdWriter!!.write("relative_ms,monotonic_ns,rpm,speed_kmh,load_pct,throttle_pct,maf_gps,coolant_c,voltage_v\n")
+            obdWriter!!.write("relative_ms,monotonic_ns,rpm,speed_kmh,load_pct,throttle_pct,map_kpa,coolant_c,intake_c,voltage_v\n")
             obdWriter!!.flush()
 
             sensorsUri = createPublicFile("sensors.csv", "text/csv")
@@ -100,10 +100,11 @@ class PublicSessionRecorder(
         if (!running.get()) return
         val relativeMs = (monotonicNs - sessionStartNs) / 1_000_000.0
         obdWriter?.apply {
-            write("%.3f,%d,%s,%s,%s,%s,%s,%s,%s\n".format(
+            write("%.3f,%d,%s,%s,%s,%s,%s,%s,%s,%s\n".format(
                 Locale.US, relativeMs, monotonicNs,
                 v.rpm?.toString() ?: "", v.speed?.toString() ?: "", v.load?.toString() ?: "",
-                v.throttle?.toString() ?: "", v.maf?.toString() ?: "", v.coolant?.toString() ?: "", v.voltage?.toString() ?: ""
+                v.throttle?.toString() ?: "", v.map?.toString() ?: "", v.coolant?.toString() ?: "",
+                v.intake?.toString() ?: "", v.voltage?.toString() ?: ""
             ))
             flush()
         }
