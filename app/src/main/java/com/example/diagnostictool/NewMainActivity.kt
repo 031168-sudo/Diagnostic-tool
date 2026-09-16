@@ -45,11 +45,14 @@ class NewMainActivity : AppCompatActivity() {
         refreshCarUi()
     }
 
+    fun hasLocationPermission(): Boolean = if (Build.VERSION.SDK_INT < 23) true else checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED || checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
     private fun refreshCarUi() {
         val car = carStore.selected()
         if (car == null) { currentCarText.text = "Автомобиль не выбран\nСначала добавьте автомобиль"; connectButton.isEnabled=false; recordButton.isEnabled=false; return }
         currentCarText.text = "${car.title()}\n${car.subtitle().ifBlank { "Параметры не заполнены" }}"
-        connectButton.isEnabled=true; recordButton.isEnabled=true; configureObd()
+        connectButton.isEnabled=true; recordButton.isEnabled=true
+        status.text = "OBD-адаптер: ${if (::obd.isInitialized) "выбран/подключение" else "не подключён — запись возможна с GPS"}"
     }
 
     private fun configureObd() {
@@ -65,12 +68,7 @@ class NewMainActivity : AppCompatActivity() {
     private fun showObdDevices(devices: List<TargetElm327Ble.DeviceInfo>) {
         val labels = devices.map { it.label() }.toTypedArray()
         AlertDialog.Builder(this).setTitle("OBD-адаптеры рядом")
-            .setSingleChoiceItems(labels, -1) { dialog, which ->
-                val selected = devices[which]
-                dialog.dismiss()
-                status.text = "Выбран OBD-адаптер: ${selected.label().replace("\n", " — ")}"
-                obd.connect(selected.device)
-            }
+            .setSingleChoiceItems(labels, -1) { dialog, which -> val selected=devices[which]; dialog.dismiss(); status.text="Выбран OBD-адаптер: ${selected.label().replace("\n", " — ")}"; obd.connect(selected.device) }
             .setNegativeButton("Отмена", null).show()
     }
 
@@ -93,12 +91,19 @@ class NewMainActivity : AppCompatActivity() {
     private fun showHistory(){val car=carStore.selected()?:run{showCarsDialog();return};val records=recordStore.forCar(car.id);val text=if(records.isEmpty())"Диагностик пока нет." else records.joinToString("\n\n"){val date=SimpleDateFormat("dd.MM.yyyy HH:mm",Locale.getDefault()).format(Date(it.createdAt));"${date}\n${it.complaint.ifBlank{"Без описания неисправности"}}\nСессия: ${it.sessionName}"};AlertDialog.Builder(this).setTitle("История — ${car.title()}").setMessage(text).setPositiveButton("Закрыть",null).show()}
 
     private fun requestAndConnect(){
-        val permissions=mutableListOf<String>();if(Build.VERSION.SDK_INT>=31){permissions+=Manifest.permission.BLUETOOTH_SCAN;permissions+=Manifest.permission.BLUETOOTH_CONNECT};permissions+=Manifest.permission.RECORD_AUDIO;pendingConnect=true
-        if(permissions.any{checkSelfPermission(it)!=PackageManager.PERMISSION_GRANTED})requestPermissions(permissions.toTypedArray(),requestCode)else obd.scan()
+        val permissions=mutableListOf<String>();if(Build.VERSION.SDK_INT>=31){permissions+=Manifest.permission.BLUETOOTH_SCAN;permissions+=Manifest.permission.BLUETOOTH_CONNECT};pendingConnect=true
+        if(permissions.any{checkSelfPermission(it)!=PackageManager.PERMISSION_GRANTED})requestPermissions(permissions.toTypedArray(),requestCode)else{configureObd();obd.scan()}
     }
-    override fun onRequestPermissionsResult(request:Int,permissions:Array<out String>,results:IntArray){super.onRequestPermissionsResult(request,permissions,results);if(request==requestCode&&results.all{it==PackageManager.PERMISSION_GRANTED}&&pendingConnect)obd.scan();pendingConnect=false}
+    override fun onRequestPermissionsResult(request:Int,permissions:Array<out String>,results:IntArray){super.onRequestPermissionsResult(request,permissions,results);if(request==requestCode&&pendingConnect&&results.all{it==PackageManager.PERMISSION_GRANTED}){configureObd();obd.scan()};pendingConnect=false}
 
-    private fun toggleRecording(){val car=carStore.selected()?:run{showCarsDialog();return};if(recorder==null){if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED){requestAndConnect();return};val r=PublicSessionRecorder(this,car){text->runOnUiThread{recordStatus.text=text}};recorder=r;r.start();recordButton.text="ОСТАНОВИТЬ ЗАПИСЬ"}else{val r=recorder?:return;r.stop();recorder=null;recordButton.text="НАЧАТЬ ЗАПИСЬ";showComplaintDialog(car,r.sessionName)}}
+    private fun toggleRecording(){
+        val car=carStore.selected()?:run{showCarsDialog();return}
+        if(recorder==null){
+            val needed=if(Build.VERSION.SDK_INT>=23)arrayOf(Manifest.permission.RECORD_AUDIO,Manifest.permission.ACCESS_FINE_LOCATION)else arrayOf(Manifest.permission.RECORD_AUDIO)
+            if(needed.any{checkSelfPermission(it)!=PackageManager.PERMISSION_GRANTED}){pendingConnect=false;requestPermissions(needed,requestCode);return}
+            val r=PublicSessionRecorder(this,car){text->runOnUiThread{recordStatus.text=text}};recorder=r;r.start();recordButton.text="ОСТАНОВИТЬ ЗАПИСЬ"
+        }else{val r=recorder?:return;r.stop();recorder=null;recordButton.text="НАЧАТЬ ЗАПИСЬ";showComplaintDialog(car,r.sessionName)}
+    }
     private fun showComplaintDialog(car:Car,sessionName:String){val input=EditText(this).apply{hint="Опишите неисправность своими словами";minLines=5;gravity=android.view.Gravity.TOP};AlertDialog.Builder(this).setTitle("Описание неисправности").setView(input).setNegativeButton("Пропустить"){_,_->recordStore.add(car.id,sessionName,"")}.setPositiveButton("Сохранить"){_,_->recordStore.add(car.id,sessionName,input.text.toString().trim())}.show()}
     private fun openDownloads(){try{startActivity(Intent("android.intent.action.VIEW_DOWNLOADS"))}catch(_:Exception){startActivity(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE))}}
     override fun onDestroy(){recorder?.stop();recorder=null;if(::obd.isInitialized)obd.close();super.onDestroy()}
