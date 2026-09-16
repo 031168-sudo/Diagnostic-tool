@@ -42,7 +42,9 @@ class TargetElm327Ble(
     @Volatile private var running = false
     @Volatile private var found = false
     private var commandIndex = 0
-    private val commands = listOf("010C", "010D", "0104", "0111", "0110", "0105", "0142")
+    // Only PIDs confirmed by the user's vehicle are polled.
+    // 0110 (MAF) was removed because the vehicle does not support it.
+    private val commands = listOf("010C", "010D", "0104", "0111", "010B", "0105", "010F", "0142")
     private val mainHandler = Handler(Looper.getMainLooper())
 
     @SuppressLint("MissingPermission")
@@ -86,9 +88,6 @@ class TargetElm327Ble(
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) { listener.onState("Ошибка GATT: $status"); return }
-
-            // Select write+notify characteristics from the same service, preferring
-            // the common FFE1/FFF1 UART endpoints used by BLE ELM327 adapters.
             var bestWrite: BluetoothGattCharacteristic? = null
             var bestNotify: BluetoothGattCharacteristic? = null
             var bestScore = -1
@@ -200,12 +199,13 @@ class TargetElm327Ble(
         val data = hex.substring(start + marker.length)
         fun b(i: Int): Int? = if (data.length >= i + 2) data.substring(i, i + 2).toIntOrNull(16) else null
         when (pid) {
+            0x0B -> { val a=b(0) ?: return false; values.map=a.toDouble() }
             0x0C -> { val a=b(0); val c=b(2); if (a!=null&&c!=null) values.rpm=(a*256+c)/4.0 else return false }
             0x0D -> { val a=b(0) ?: return false; values.speed=a.toDouble() }
             0x04 -> { val a=b(0) ?: return false; values.load=a*100.0/255.0 }
             0x11 -> { val a=b(0) ?: return false; values.throttle=a*100.0/255.0 }
-            0x10 -> { val a=b(0); val c=b(2); if(a!=null&&c!=null) values.maf=(a*256+c)/100.0 else return false }
             0x05 -> { val a=b(0) ?: return false; values.coolant=a-40.0 }
+            0x0F -> { val a=b(0) ?: return false; values.intake=a-40.0 }
             0x42 -> { val a=b(0); val c=b(2); if(a!=null&&c!=null) values.voltage=(a*256+c)/1000.0 else return false }
             else -> return false
         }
