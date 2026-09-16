@@ -10,6 +10,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import androidx.appcompat.app.AppCompatActivity
 import java.util.Locale
 import java.util.UUID
@@ -42,8 +43,6 @@ class TargetElm327Ble(
     @Volatile private var running = false
     @Volatile private var found = false
     private var commandIndex = 0
-    // Vehicle-supported PIDs only: RPM, speed, load, throttle, MAP, coolant, intake temp, voltage.
-    // 0110 (MAF) is not supported by this vehicle.
     private val commands = listOf("010C", "010D", "0104", "0111", "010B", "0105", "010F", "0142")
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -89,101 +88,121 @@ class TargetElm327Ble(
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            val uart = g.services.flatMap { it.characteristics }.firstOrNull { c ->
-                (c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE) != 0 &&
-                    (c.properties and (BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_INDICATE)) != 0
+            if (status != BluetoothGatt.GATT_SUCCESS) { listener.onState("Ошибка GATT: $status"); return }
+            var bestWrite: BluetoothGattCharacteristic? = null
+            var bestNotify: BluetoothGattCharacteristic? = null
+            var bestScore = -1
+            for (service in g.services) {
+                val writes = service.characteristics.filter {
+                    (it.properties and (BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)) != 0
+                }
+                val notifies = service.characteristics.filter {
+                    (it.properties and (BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_INDICATE)) != 0
+                }
+                for (w in writes) for (n in notifies) {
+                    val score = (if (w.uuid == n.uuid) 3 else 0) +
+                        (if (w.uuid.toString().contains("ffe1", true)) 10 else 0) +
+                        (if (n.uuid.toString().contains("ffe1", true)) 10 else 0) +
+                        (if (w.uuid.toString().contains("fff1", true)) 8 else 0) +
+                        (if (n.uuid.toString().contains("fff1", true)) 8 else 0)
+                    if (score > bestScore) { bestScore = score; bestWrite = w; bestNotify = n }
+                }
             }
-            if (uart == null) { listener.onState("BLE UART не найден"); return }
-            writeCharacteristic = uart
-            rxCharacteristic = uart
-            g.setCharacteristicNotification(uart, true)
-            val descriptor = uart.getDescriptor(CLIENT_CONFIG_UUID)
+            if (bestWrite == null || bestNotify == null) { listener.onState("У OBDII не найдена BLE UART-служба"); return }
+            writeCharacteristic = bestWrite
+            rxCharacteristic = bestNotify
+            listener.onState("BLE UART: ${bestWrite.uuid} / ${bestNotify.uuid}")
+            g.setCharacteristicNotification(bestNotify, true)
+            val descriptor = bestNotify.getDescriptor(CLIENT_CONFIG_UUID)
             if (descriptor != null) {
                 descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                 g.writeDescriptor(descriptor)
-            }
-            listener.onState("ELM327: инициализация...")
-            thread { initialize() }
+            } else startElmSession()
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) startElmSession() else listener.onState("Ошибка включения уведомлений BLE: $status")
         }
 
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-            val text = characteristic.value?.toString(Charsets.US_ASCII) ?: return
-            synchronized(responseLock) {
-                rxBuffer.append(text)
-                responseText.append(text)
-                if (rxBuffer.contains(">")) {
-                    promptReceived = true
-                    responseLock.notifyAll()
-                }
-            }
+            consume(characteristic.value?.toString(Charsets.US_ASCII) ?: "")
         }
     }
 
     @SuppressLint("MissingPermission")
-    private fun initialize() {
-        val init = listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP6")
-        for (command in init) {
-            if (!sendAndWait(command)) { listener.onState("ELM327: нет ответа на $command"); return }
-        }
-        running = true
-        listener.onState("ELM327 готов; опрос PID...")
-        pollLoop()
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun pollLoop() {
-        while (running) {
-            val command = commands[commandIndex % commands.size]
-            commandIndex++
-            val response = sendAndWait(command)
-            val value = parsePid(response, command)
-            if (value != null) {
-                when (command) {
-                    "010C" -> values.rpm = value * 4.0
-                    "010D" -> values.speed = value
-                    "0104" -> values.load = value
-                    "0111" -> values.throttle = value
-                    "010B" -> values.map = value
-                    "0105" -> values.coolant = value - 40.0
-                    "010F" -> values.intake = value - 40.0
-                    "0142" -> values.voltage = value / 1000.0
-                }
-                listener.onData(values.copy(), android.os.SystemClock.elapsedRealtimeNanos())
-            }
+    private fun startElmSession() {
+        thread(name = "elm327-session") {
+            listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP6").forEach { command -> sendAndWait(command, 3000) }
+            running = true
+            commandIndex = 0
+            listener.onState("OBDII $targetMac готов; OBD опрашивается")
+            pollLoop()
         }
     }
 
     @SuppressLint("MissingPermission")
-    private fun sendAndWait(command: String): String {
-        val characteristic = writeCharacteristic ?: return ""
+    private fun send(command: String) {
+        val c = writeCharacteristic ?: return
+        c.writeType = if ((c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0)
+            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE else BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        c.value = (command + "\r").toByteArray(Charsets.US_ASCII)
+        gatt?.writeCharacteristic(c)
+    }
+
+    private fun sendAndWait(command: String, timeoutMs: Long): String {
         synchronized(responseLock) {
-            responseText = StringBuilder()
-            rxBuffer.clear()
-            promptReceived = false
-            characteristic.value = (command + "\r").toByteArray(Charsets.US_ASCII)
-            gatt?.writeCharacteristic(characteristic)
-            val deadline = System.currentTimeMillis() + 3000
-            while (!promptReceived && System.currentTimeMillis() < deadline) {
+            responseText = StringBuilder(); promptReceived = false; rxBuffer.clear(); send(command)
+            val deadline = SystemClock.uptimeMillis() + timeoutMs
+            while (!promptReceived && SystemClock.uptimeMillis() < deadline) {
                 try { responseLock.wait(100) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); break }
             }
             return responseText.toString()
         }
     }
 
-    private fun parsePid(response: String, command: String): Double? {
-        val pid = command.substring(2)
-        val compact = response.uppercase(Locale.US).replace(" ", "").replace("\r", "").replace("\n", "")
-        val marker = "41$pid"
-        val i = compact.indexOf(marker)
-        if (i < 0 || i + marker.length + 2 > compact.length) return null
-        return try { compact.substring(i + marker.length, i + marker.length + 2).toInt(16).toDouble() } catch (_: Exception) { null }
+    private fun consume(text: String) {
+        synchronized(responseLock) {
+            rxBuffer.append(text); responseText.append(text)
+            if (rxBuffer.contains(">")) { promptReceived = true; responseLock.notifyAll(); rxBuffer.clear() }
+        }
+    }
+
+    private fun parseResponse(response: String, pid: Int): Boolean {
+        val hex = response.uppercase(Locale.US).replace(Regex("[^0-9A-F]"), "")
+        val marker = "41" + "%02X".format(Locale.US, pid)
+        val start = hex.indexOf(marker)
+        if (start < 0) return false
+        val data = hex.substring(start + marker.length)
+        fun b(i: Int): Int? = if (data.length >= i + 2) data.substring(i, i + 2).toIntOrNull(16) else null
+        when (pid) {
+            0x0B -> { val a = b(0) ?: return false; values.map = a.toDouble() }
+            0x0C -> { val a=b(0) ?: return false; val c=b(2) ?: return false; values.rpm=(a*256+c)/4.0 }
+            0x0D -> { val a=b(0) ?: return false; values.speed=a.toDouble() }
+            0x04 -> { val a=b(0) ?: return false; values.load=a*100.0/255.0 }
+            0x11 -> { val a=b(0) ?: return false; values.throttle=a*100.0/255.0 }
+            0x05 -> { val a=b(0) ?: return false; values.coolant=a-40.0 }
+            0x0F -> { val a=b(0) ?: return false; values.intake=a-40.0 }
+            0x42 -> { val a=b(0) ?: return false; val c=b(2) ?: return false; values.voltage=(a*256+c)/1000.0 }
+            else -> return false
+        }
+        return true
+    }
+
+    private fun pollLoop() {
+        while (running) {
+            val command = commands[commandIndex++ % commands.size]
+            val response = sendAndWait(command, 2000)
+            if (parseResponse(response, command.substring(2).toInt(16))) listener.onData(values.copy(), SystemClock.elapsedRealtimeNanos())
+            try { Thread.sleep(80) } catch (_: InterruptedException) { break }
+        }
     }
 
     fun close() {
         running = false
+        mainHandler.removeCallbacksAndMessages(null)
+        synchronized(responseLock) { promptReceived = true; responseLock.notifyAll(); rxBuffer.clear() }
         try { gatt?.close() } catch (_: Exception) {}
-        gatt = null
-        writeCharacteristic = null
-        rxCharacteristic = null
+        gatt = null; writeCharacteristic = null; rxCharacteristic = null
     }
 }
