@@ -16,7 +16,6 @@ import java.util.Locale
 import java.util.UUID
 import kotlin.concurrent.thread
 
-/** BLE ELM327 connection locked to the adapter shown in the user's diagnostic app. */
 class TargetElm327Ble(
     private val activity: AppCompatActivity,
     private val listener: Listener
@@ -49,10 +48,7 @@ class TargetElm327Ble(
     @SuppressLint("MissingPermission")
     fun connect() {
         close()
-        if (!adapter.isEnabled) {
-            listener.onState("Bluetooth выключен")
-            return
-        }
+        if (!adapter.isEnabled) { listener.onState("Bluetooth выключен"); return }
         found = false
         listener.onState("Поиск BLE OBDII: $TARGET_MAC...")
         val scanner = adapter.bluetoothLeScanner
@@ -89,25 +85,39 @@ class TargetElm327Ble(
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                listener.onState("Ошибка GATT: $status")
-                return
+            if (status != BluetoothGatt.GATT_SUCCESS) { listener.onState("Ошибка GATT: $status"); return }
+
+            // Select write+notify characteristics from the same service, preferring
+            // the common FFE1/FFF1 UART endpoints used by BLE ELM327 adapters.
+            var bestWrite: BluetoothGattCharacteristic? = null
+            var bestNotify: BluetoothGattCharacteristic? = null
+            var bestScore = -1
+            for (service in g.services) {
+                val writes = service.characteristics.filter {
+                    (it.properties and (BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)) != 0
+                }
+                val notifies = service.characteristics.filter {
+                    (it.properties and (BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_INDICATE)) != 0
+                }
+                if (writes.isEmpty() || notifies.isEmpty()) continue
+                for (w in writes) for (n in notifies) {
+                    val s = (if (w.uuid.toString().contains("ffe1", true)) 10 else 0) +
+                            (if (n.uuid.toString().contains("ffe1", true)) 10 else 0) +
+                            (if (w.uuid.toString().contains("fff1", true)) 8 else 0) +
+                            (if (n.uuid.toString().contains("fff1", true)) 8 else 0) +
+                            (if (w.uuid == n.uuid) 3 else 0)
+                    if (s > bestScore) { bestScore = s; bestWrite = w; bestNotify = n }
+                }
             }
-            var write: BluetoothGattCharacteristic? = null
-            var notify: BluetoothGattCharacteristic? = null
-            for (service in g.services) for (c in service.characteristics) {
-                val p = c.properties
-                if (write == null && (p and (BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)) != 0) write = c
-                if (notify == null && (p and (BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_INDICATE)) != 0) notify = c
-            }
-            writeCharacteristic = write
-            rxCharacteristic = notify
-            if (write == null || notify == null) {
+            writeCharacteristic = bestWrite
+            rxCharacteristic = bestNotify
+            if (bestWrite == null || bestNotify == null) {
                 listener.onState("У OBDII $TARGET_MAC не найдена BLE UART-служба")
                 return
             }
-            g.setCharacteristicNotification(notify, true)
-            val descriptor = notify.getDescriptor(CLIENT_CONFIG_UUID)
+            listener.onState("BLE UART: ${bestWrite.uuid} / ${bestNotify.uuid}")
+            g.setCharacteristicNotification(bestNotify, true)
+            val descriptor = bestNotify.getDescriptor(CLIENT_CONFIG_UUID)
             if (descriptor != null) {
                 descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                 g.writeDescriptor(descriptor)
@@ -132,14 +142,14 @@ class TargetElm327Ble(
     @SuppressLint("MissingPermission")
     private fun startElmSession() {
         thread(name = "elm327-session") {
-            // ELM327 replies are framed by the '>' prompt. Wait for each response before sending the next command.
-            sendAndWait("ATZ", 2500)
-            sendAndWait("ATE0", 1000)
-            sendAndWait("ATL0", 1000)
-            sendAndWait("ATS0", 1000)
-            sendAndWait("ATH0", 1000)
-            sendAndWait("ATSP0", 3000)
+            sendAndWait("ATZ", 3000)
+            sendAndWait("ATE0", 1200)
+            sendAndWait("ATL0", 1200)
+            sendAndWait("ATS0", 1200)
+            sendAndWait("ATH0", 1200)
+            sendAndWait("ATSP6", 4000)
             running = true
+            commandIndex = 0
             listener.onState("OBDII $TARGET_MAC готов; OBD опрашивается")
             pollLoop()
         }
@@ -158,6 +168,7 @@ class TargetElm327Ble(
         synchronized(responseLock) {
             responseText = StringBuilder()
             promptReceived = false
+            rxBuffer.clear()
             send(command)
             val deadline = SystemClock.uptimeMillis() + timeoutMs
             while (!promptReceived) {
@@ -182,7 +193,6 @@ class TargetElm327Ble(
     }
 
     private fun parseResponse(response: String, pid: Int): Boolean {
-        // Accept normal ELM output (41 0C ...) and CAN-header output (7E8 04 41 0C ...).
         val hex = response.uppercase(Locale.US).replace(Regex("[^0-9A-F]"), "")
         val marker = "41" + "%02X".format(Locale.US, pid)
         val start = hex.indexOf(marker)
@@ -205,10 +215,10 @@ class TargetElm327Ble(
     private fun pollLoop() {
         while (running) {
             val command = commands[commandIndex++ % commands.size]
-            val response = sendAndWait(command, 1800)
+            val response = sendAndWait(command, 2000)
             val pid = command.substring(2).toInt(16)
             if (parseResponse(response, pid)) listener.onData(values.copy(), SystemClock.elapsedRealtimeNanos())
-            Thread.sleep(40)
+            Thread.sleep(80)
         }
     }
 
@@ -216,11 +226,10 @@ class TargetElm327Ble(
     fun close() {
         running = false
         mainHandler.removeCallbacksAndMessages(null)
-        synchronized(responseLock) { promptReceived = true; responseLock.notifyAll() }
+        synchronized(responseLock) { promptReceived = true; responseLock.notifyAll(); rxBuffer.clear() }
         gatt?.close()
         gatt = null
         writeCharacteristic = null
         rxCharacteristic = null
-        rxBuffer.clear()
     }
 }
