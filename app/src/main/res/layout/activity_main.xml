@@ -6,7 +6,8 @@
         <Button android:id="@+id/connect" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="Подключить ELM327"/>
         <TextView android:id="@+id/obdValues" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="RPM: —\nSpeed: —\nLoad: —\nThrottle: —\nMAF: —\nCoolant: —" android:textSize="18sp"/>
         <Button android:id="@+id/record" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="НАЧАТЬ ЗАПИСЬ"/>
+        <Button android:id="@+id/openFolder" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="ОТКРЫТЬ ЗАГРУЗКИ"/>
         <TextView android:id="@+id/recordStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="Запись остановлена" android:textSize="16sp"/>
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="Сессия сохраняется как WAV 48 кГц PCM16 + obd.csv + session.json. Время OBD и аудио привязано к одной монотонной шкале Android." android:textSize="14sp"/>
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="Сессия сохраняется в Загрузки/DiagnosticTool/sessions: WAV 48 кГц PCM16 + obd.csv + sensors.csv + session.json. OBD, аудио, акселерометр и гироскоп используют общую монотонную шкалу Android." android:textSize="14sp"/>
     </LinearLayout>
 </ScrollView>
