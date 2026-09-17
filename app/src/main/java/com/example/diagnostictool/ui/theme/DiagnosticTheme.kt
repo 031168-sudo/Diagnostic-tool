@@ -9,7 +9,7 @@ val DiagBlack = Color(0xFF101010)
 val DiagGray = Color(0xFF3A3A3A)
 val DiagLightGray = Color(0xFFB8B8B8)
 val DiagWhite = Color(0xFFF5F5F5)
-val DiagRed = Color(0xFFE31818)
+val DiagRed = Color(0xFFB71800)
 
 private val DiagColorScheme = darkColorScheme(
     primary = DiagRed,
