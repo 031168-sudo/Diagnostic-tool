@@ -4,6 +4,6 @@
     <path android:fillColor="#F5F5F5" android:pathData="M31,37 L77,37 L84,48 L76,58 L32,58 L24,48 Z"/>
     <path android:fillColor="#101010" android:pathData="M34,40 L74,40 L79,48 L73,54 L35,54 L29,48 Z"/>
     <path android:fillColor="#E31818" android:pathData="M28,49 L43,49 L47,44 L51,53 L55,39 L59,53 L63,44 L67,49 L81,49 L81,51 L66,51 L63,48 L59,56 L55,47 L51,58 L47,48 L44,51 L28,51 Z"/>
-    <circle android:fillColor="#C7C7C7" android:cx="54" android:cy="69" android:radius="10"/>
-    <circle android:fillColor="#101010" android:cx="54" android:cy="69" android:radius="4"/>
+    <path android:fillColor="#C7C7C7" android:pathData="M44,69 A10,10 0,1 0,64,69 A10,10 0,1 0,44,69 Z"/>
+    <path android:fillColor="#101010" android:pathData="M50,69 A4,4 0,1 0,58,69 A4,4 0,1 0,50,69 Z"/>
 </vector>
