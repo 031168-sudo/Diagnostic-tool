@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/diag_black" android:fillViewport="true">
-    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingLeft="20dp" android:paddingRight="20dp" android:paddingBottom="24dp" android:paddingTop="@android:dimen/status_bar_height">
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/mainRoot" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/diag_black" android:fillViewport="true">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingLeft="20dp" android:paddingRight="20dp" android:paddingBottom="24dp">
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Alfa Diagnostic" android:textColor="@color/diag_red" android:textSize="28sp" android:textStyle="bold" android:gravity="center" android:paddingTop="8dp" android:paddingBottom="14dp"/>
         <TextView android:id="@+id/currentCar" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Автомобиль" android:textColor="@color/diag_white" android:textSize="24sp" android:textStyle="bold" android:gravity="center"/>
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="10dp">
