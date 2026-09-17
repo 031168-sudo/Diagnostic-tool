@@ -3,7 +3,6 @@ package com.example.diagnostictool
 import android.content.ContentValues
 import android.graphics.Paint
 import android.graphics.pdf.PdfDocument
-import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
 import android.view.Gravity
@@ -32,8 +31,7 @@ class DiagnosticChatActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         diagnosticId = intent.getStringExtra("diagnostic_id") ?: run { finish(); return }
         sessionName = intent.getStringExtra("session_name") ?: "diagnostic"
-        buildUi()
-        poll()
+        buildUi(); poll()
     }
 
     private fun buildUi() {
@@ -63,15 +61,9 @@ class DiagnosticChatActivity : AppCompatActivity() {
                     }
                     conversation.text = buildConversation(s)
                     if (s.state == "question") {
-                        question.text = s.question
-                        answer.isEnabled = true; send.isEnabled = true
-                    } else {
-                        question.text = ""; answer.isEnabled = false; send.isEnabled = false
-                    }
-                    if (s.state == "completed" && s.conclusion.isNotBlank()) {
-                        lastConclusion = s.conclusion
-                        pdf.isEnabled = true
-                    }
+                        question.text = s.question; answer.isEnabled = true; send.isEnabled = true
+                    } else { question.text = ""; answer.isEnabled = false; send.isEnabled = false }
+                    if (s.state == "completed" && s.conclusion.isNotBlank()) { lastConclusion = s.conclusion; pdf.isEnabled = true }
                     if (s.state == "processing" || s.state == "question") window.decorView.postDelayed({ poll() }, 2000)
                 }.onFailure { e -> stage.text = "Связь с сервером: ${e.message}"; window.decorView.postDelayed({ poll() }, 5000) }
             }
@@ -89,8 +81,7 @@ class DiagnosticChatActivity : AppCompatActivity() {
     private fun submitAnswer() {
         val text = answer.text.toString().trim()
         if (text.isBlank() || !busy.compareAndSet(false, true)) return
-        send.isEnabled = false
-        question.text = "Ответ отправляется…"
+        send.isEnabled = false; question.text = "Ответ отправляется…"
         DiagnosticApi.answer(diagnosticId, text) { result ->
             runOnUiThread {
                 busy.set(false)
@@ -103,25 +94,22 @@ class DiagnosticChatActivity : AppCompatActivity() {
     private fun savePdf(text: String) {
         if (text.isBlank()) return
         try {
-            val doc = PdfDocument()
-            val pageWidth = 595; val pageHeight = 842
+            val doc = PdfDocument(); val pageWidth = 595; val pageHeight = 842
             var pageNumber = 1
             var page = doc.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
-            val canvas = page.canvas
             val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 12f; typeface = android.graphics.Typeface.DEFAULT }
             var y = 48f
-            val lines = wrap(text, paint, pageWidth - 72f)
-            for (line in lines) {
+            for (line in wrap(text, paint, pageWidth - 72f)) {
                 if (y > pageHeight - 48) { doc.finishPage(page); pageNumber++; page = doc.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create()); y = 48f }
                 page.canvas.drawText(line, 36f, y, paint); y += 18f
             }
             doc.finishPage(page)
             val values = ContentValues().apply { put(MediaStore.Downloads.DISPLAY_NAME, "Заключение_$sessionName.pdf"); put(MediaStore.Downloads.MIME_TYPE, "application/pdf"); put(MediaStore.Downloads.RELATIVE_PATH, "Download/DiagnosticTool/conclusions"); put(MediaStore.Downloads.IS_PENDING, 1) }
             val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("Не удалось создать PDF")
-            contentResolver.openOutputStream(uri)?.use { doc.writeTo(it) }
+            contentResolver.openOutputStream(uri)?.use { doc.writeTo(it) } ?: error("Не удалось записать PDF")
             doc.close()
             contentResolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
-            getSharedPreferences("diagnostic_records", MODE_PRIVATE).edit().apply { }.also { }
+            DiagnosticRecordStore(this).setAiResponse(sessionName, uri.toString())
             Toast.makeText(this, "PDF сохранён в Downloads/DiagnosticTool/conclusions", Toast.LENGTH_LONG).show()
             pdf.isEnabled = false
         } catch (e: Exception) { Toast.makeText(this, "Ошибка PDF: ${e.message}", Toast.LENGTH_LONG).show() }
