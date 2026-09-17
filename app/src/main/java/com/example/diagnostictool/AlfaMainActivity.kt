@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -281,7 +280,7 @@ class AlfaMainActivity : ComponentActivity() {
         else { configureObd(); obd.scan() }
     }
 
-    override fun onRequestPermissionsResult(request: Int, permissions: Array<out String>, results: IntArray) {
+    override fun onRequestPermissionsResult(request: Int, permissions: Array<String>, results: IntArray) {
         super.onRequestPermissionsResult(request, permissions, results)
         if (request == permissionRequest && results.all { it == PackageManager.PERMISSION_GRANTED }) { configureObd(); obd.scan() }
     }
