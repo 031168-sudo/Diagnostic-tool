@@ -14,10 +14,9 @@ import java.util.UUID
 import java.util.concurrent.Executors
 
 object DiagnosticApi {
-    // Set this to the address where the standalone Diagnostic Tool backend is deployed.
-    // It must never point to another project's server.
-    private const val BASE_URL = "https://<YOUR-DIAGNOSTIC-SERVER>"
     private val executor = Executors.newCachedThreadPool()
+    private val baseUrl: String
+        get() = BuildConfig.DIAGNOSTIC_API_URL.trim().trimEnd('/')
 
     data class Status(
         val id: String,
@@ -33,9 +32,9 @@ object DiagnosticApi {
     fun upload(context: Context, car: Car, sessionName: String, complaint: String, files: List<Uri>, callback: (Result<String>) -> Unit) {
         executor.execute {
             try {
+                require(baseUrl.isNotBlank()) { "Адрес сервера диагностики не настроен в этой сборке" }
                 val boundary = "----AlfaDiagnostic${UUID.randomUUID()}"
-                val url = URL("$BASE_URL/v1/diagnostics")
-                val c = (url.openConnection() as HttpURLConnection).apply {
+                val c = (URL("$baseUrl/v1/diagnostics").openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"; doOutput = true; connectTimeout = 30_000; readTimeout = 120_000
                     setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
                     setRequestProperty("Accept", "application/json")
@@ -65,7 +64,8 @@ object DiagnosticApi {
     fun status(id: String, callback: (Result<Status>) -> Unit) {
         executor.execute {
             try {
-                val c = (URL("$BASE_URL/v1/diagnostics/$id").openConnection() as HttpURLConnection).apply {
+                require(baseUrl.isNotBlank()) { "Адрес сервера диагностики не настроен в этой сборке" }
+                val c = (URL("$baseUrl/v1/diagnostics/$id").openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"; connectTimeout = 15_000; readTimeout = 30_000
                 }
                 val body = readResponse(c)
@@ -78,7 +78,8 @@ object DiagnosticApi {
     fun answer(id: String, text: String, callback: (Result<Unit>) -> Unit) {
         executor.execute {
             try {
-                val c = (URL("$BASE_URL/v1/diagnostics/$id/messages").openConnection() as HttpURLConnection).apply {
+                require(baseUrl.isNotBlank()) { "Адрес сервера диагностики не настроен в этой сборке" }
+                val c = (URL("$baseUrl/v1/diagnostics/$id/messages").openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"; doOutput = true; connectTimeout = 15_000; readTimeout = 60_000
                     setRequestProperty("Content-Type", "application/json; charset=utf-8")
                     setRequestProperty("Accept", "application/json")
