@@ -33,7 +33,6 @@ class AlfaMainActivity : AppCompatActivity() {
     private val carStore by lazy { CarStore(this) }
     private val recordStore by lazy { DiagnosticRecordStore(this) }
     private var lastSessionUris: List<Uri> = emptyList()
-    private var pendingConclusionSession: String? = null
     private val permissionRequest = 10
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -171,11 +170,10 @@ class AlfaMainActivity : AppCompatActivity() {
         records.forEach { record ->
             val date = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(record.createdAt))
             box.addView(TextView(this).apply { text = "$date\n${record.sessionName}\n${record.complaint.ifBlank { "Жалоба не указана" }}"; textSize = 16f })
-            box.addView(TextView(this).apply { text = when { record.aiResponseUri != null -> "ИИ: ответ получен"; record.aiSent -> "ИИ: отправлено, ответа пока нет"; else -> "ИИ: не отправлено" }; textSize = 14f; setPadding(0, 4, 0, 4) })
+            box.addView(TextView(this).apply { text = when { record.aiResponseUri != null -> "ИИ: заключение получено"; record.aiSent -> "ИИ: диагностика выполняется"; else -> "ИИ: не отправлено" }; textSize = 14f; setPadding(0, 4, 0, 4) })
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            if (!record.aiSent) row.addView(Button(this).apply { text = "Отправить ИИ"; setOnClickListener { shareHistoricalSession(car, record) } })
-            if (record.aiSent && record.aiResponseUri == null) row.addView(Button(this).apply { text = "Добавить заключение"; setOnClickListener { pickConclusion(record.sessionName) } })
-            if (record.aiResponseUri != null) row.addView(Button(this).apply { text = "Скачать заключение"; setOnClickListener { saveConclusion(Uri.parse(record.aiResponseUri), record.sessionName) } })
+            if (!record.aiSent) row.addView(Button(this).apply { text = "Запустить ИИ"; setOnClickListener { startHistoricalDiagnostic(car, record) } })
+            if (record.aiResponseUri != null) row.addView(Button(this).apply { text = "Открыть PDF"; setOnClickListener { startActivity(Intent(Intent.ACTION_VIEW).apply { setDataAndType(Uri.parse(record.aiResponseUri), "application/pdf"); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }) } })
             box.addView(row); box.addView(TextView(this).apply { setPadding(0, 0, 0, 16) })
         }
         AlertDialog.Builder(this).setTitle("История диагностики — ${car.title()}").setView(ScrollView(this).apply { addView(box) }).setPositiveButton("Закрыть", null).show()
@@ -185,41 +183,30 @@ class AlfaMainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT < 29) return emptyList()
         val result = mutableListOf<Uri>()
         for (name in listOf("audio.wav", "obd.csv", "gps.csv", "sensors.csv", "session.json")) {
-            contentResolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.Downloads._ID), "${MediaStore.Downloads.DISPLAY_NAME}=? AND ${MediaStore.Downloads.RELATIVE_PATH}=?", arrayOf(name, "Download/DiagnosticTool/sessions/$sessionName"), null)?.use { if (it.moveToFirst()) result += Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, it.getLong(0).toString()) }
+            contentResolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.Downloads._ID), "${MediaStore.Downloads.DISPLAY_NAME}=? AND ${MediaStore.Downloads.RELATIVE_PATH}=?", arrayOf(name, "Download/DiagnosticTool/sessions/$sessionName"), null)?.use {
+                if (it.moveToFirst()) result += Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, it.getLong(0).toString())
+            }
         }
         return result
     }
 
-    private fun shareHistoricalSession(car: Car, record: DiagnosticRecordStore.Record) {
+    private fun startHistoricalDiagnostic(car: Car, record: DiagnosticRecordStore.Record) {
         val uris = findSessionUris(record.sessionName)
         if (uris.isEmpty()) { Toast.makeText(this, "Файлы этой сессии не найдены", Toast.LENGTH_LONG).show(); return }
-        recordStore.markAiSent(record.sessionName)
-        val prompt = "Проанализируй диагностическую сессию автомобиля. Автомобиль: ${car.title()}. Параметры: ${car.subtitle()}. Жалоба: ${record.complaint.ifBlank { "не указана" }}. Сопоставь audio.wav, obd.csv, gps.csv, sensors.csv и session.json по общей временной шкале и дай техническое заключение с конкретными проверками."
-        val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply { type = "application/octet-stream"; putExtra(Intent.EXTRA_TEXT, prompt); putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris)); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-        startActivity(Intent.createChooser(intent, "Передать диагностическую сессию в ИИ"))
+        uploadDiagnostic(car, record.sessionName, record.complaint, uris)
     }
 
-    private fun pickConclusion(sessionName: String) {
-        pendingConclusionSession = sessionName
-        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply { type = "application/pdf"; addCategory(Intent.CATEGORY_OPENABLE); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) }, 200)
-    }
-
-    private fun saveConclusion(uri: Uri, sessionName: String) {
-        try {
-            val values = android.content.ContentValues().apply { put(MediaStore.Downloads.DISPLAY_NAME, "Заключение_$sessionName.pdf"); put(MediaStore.Downloads.MIME_TYPE, "application/pdf"); put(MediaStore.Downloads.RELATIVE_PATH, "Download/DiagnosticTool/conclusions"); put(MediaStore.Downloads.IS_PENDING, 1) }
-            val out = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("Не удалось создать файл")
-            contentResolver.openInputStream(uri)?.use { input -> contentResolver.openOutputStream(out)?.use { output -> input.copyTo(output) } } ?: error("Не удалось прочитать файл")
-            contentResolver.update(out, android.content.ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
-            Toast.makeText(this, "Заключение сохранено", Toast.LENGTH_LONG).show()
-        } catch (e: Exception) { Toast.makeText(this, "Ошибка сохранения: ${e.message}", Toast.LENGTH_LONG).show() }
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 200 && resultCode == RESULT_OK && data?.data != null) {
-            pendingConclusionSession?.let { recordStore.setAiResponse(it, data.data.toString()) }
-            pendingConclusionSession = null
-            showHistory()
+    private fun uploadDiagnostic(car: Car, sessionName: String, complaint: String, uris: List<Uri>) {
+        Toast.makeText(this, "Отправляю диагностическую сессию…", Toast.LENGTH_LONG).show()
+        DiagnosticApi.upload(this, car, sessionName, complaint, uris) { result ->
+            runOnUiThread {
+                result.onSuccess { id ->
+                    recordStore.markAiSent(sessionName)
+                    startActivity(Intent(this, DiagnosticChatActivity::class.java).apply {
+                        putExtra("diagnostic_id", id); putExtra("session_name", sessionName)
+                    })
+                }.onFailure { e -> Toast.makeText(this, "Не удалось отправить: ${e.message}", Toast.LENGTH_LONG).show() }
+            }
         }
     }
 
@@ -248,17 +235,15 @@ class AlfaMainActivity : AppCompatActivity() {
 
     private fun showPostRecordDialog(car: Car, sessionName: String) {
         val input = EditText(this).apply { hint = "Что вас беспокоит? (необязательно)"; minLines = 4; gravity = Gravity.TOP }
-        AlertDialog.Builder(this).setTitle("Диагностическая сессия завершена").setMessage("${car.title()}\nСессия: $sessionName").setView(input)
+        AlertDialog.Builder(this).setTitle("Диагностическая сессия завершена")
+            .setMessage("${car.title()}\nСессия: $sessionName")
+            .setView(input)
             .setNegativeButton("Закрыть") { _, _ -> recordStore.add(car.id, sessionName, input.text.toString().trim()) }
-            .setPositiveButton("АНАЛИЗИРОВАТЬ ИИ") { _, _ -> recordStore.add(car.id, sessionName, input.text.toString().trim()); shareSessionWithAi(car, sessionName, input.text.toString().trim()) }.show()
-    }
-
-    private fun shareSessionWithAi(car: Car, sessionName: String, complaint: String) {
-        if (lastSessionUris.isEmpty()) { Toast.makeText(this, "Данные сессии недоступны", Toast.LENGTH_LONG).show(); return }
-        recordStore.markAiSent(sessionName)
-        val prompt = "Проанализируй диагностическую сессию автомобиля. Автомобиль: ${car.title()}. Параметры: ${car.subtitle()}. Сессия: $sessionName. Жалоба: ${complaint.ifBlank { "не указана" }}. Во вложениях audio.wav, obd.csv, gps.csv, sensors.csv, session.json. Сопоставь их по общей временной шкале и дай техническое заключение с конкретными проверками."
-        val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply { type = "application/octet-stream"; putExtra(Intent.EXTRA_TEXT, prompt); putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(lastSessionUris)); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-        startActivity(Intent.createChooser(intent, "Передать диагностическую сессию в ИИ"))
+            .setPositiveButton("НАЧАТЬ ДИАГНОСТИКУ ИИ") { _, _ ->
+                val complaint = input.text.toString().trim()
+                recordStore.add(car.id, sessionName, complaint)
+                uploadDiagnostic(car, sessionName, complaint, lastSessionUris)
+            }.show()
     }
 
     override fun onDestroy() { recorder?.stop(); recorder = null; if (::obd.isInitialized) obd.close(); super.onDestroy() }
