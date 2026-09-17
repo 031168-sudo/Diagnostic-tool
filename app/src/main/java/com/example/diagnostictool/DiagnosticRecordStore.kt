@@ -12,7 +12,8 @@ class DiagnosticRecordStore(context: Context) {
         val complaint: String,
         val createdAt: Long,
         val aiSent: Boolean,
-        val aiResponseUri: String?
+        val aiResponseUri: String?,
+        val diagnosticId: String?
     )
 
     private val prefs = context.getSharedPreferences("diagnostic_records", Context.MODE_PRIVATE)
@@ -30,7 +31,7 @@ class DiagnosticRecordStore(context: Context) {
         prefs.edit().putString("items", a.toString()).apply()
     }
 
-    fun markAiSent(sessionName: String) { update(sessionName) { it.put("aiSent", true) } }
+    fun markAiSent(sessionName: String, diagnosticId: String) { update(sessionName) { it.put("aiSent", true); it.put("diagnosticId", diagnosticId) } }
     fun setAiResponse(sessionName: String, uri: String) { update(sessionName) { it.put("aiSent", true); it.put("aiResponseUri", uri) } }
 
     private fun update(sessionName: String, change: (JSONObject) -> Unit) {
@@ -46,7 +47,7 @@ class DiagnosticRecordStore(context: Context) {
         val a = JSONArray(prefs.getString("items", "[]"))
         return (0 until a.length()).map { o ->
             val x = a.getJSONObject(o)
-            Record(x.optString("id"), x.optString("carId"), x.optString("sessionName"), x.optString("complaint"), x.optLong("createdAt"), x.optBoolean("aiSent", false), x.optString("aiResponseUri").ifBlank { null })
+            Record(x.optString("id"), x.optString("carId"), x.optString("sessionName"), x.optString("complaint"), x.optLong("createdAt"), x.optBoolean("aiSent", false), x.optString("aiResponseUri").ifBlank { null }, x.optString("diagnosticId").ifBlank { null })
         }.filter { it.carId == carId }.reversed()
     }
 }

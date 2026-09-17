@@ -92,6 +92,23 @@ object DiagnosticApi {
         }
     }
 
+    fun chat(id: String, text: String, callback: (Result<String>) -> Unit) {
+        executor.execute {
+            try {
+                require(baseUrl.isNotBlank()) { "Адрес сервера диагностики не настроен в этой сборке" }
+                val c = (URL("$baseUrl/v1/diagnostics/$id/chat").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"; doOutput = true; connectTimeout = 15_000; readTimeout = 60_000
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    setRequestProperty("Accept", "application/json")
+                }
+                c.outputStream.use { it.write(JSONObject().put("text", text).toString().toByteArray(Charsets.UTF_8)) }
+                val body = readResponse(c)
+                if (c.responseCode !in 200..299) error("Сервер: ${c.responseCode} $body")
+                callback(Result.success(JSONObject(body).optString("answer")))
+            } catch (e: Exception) { callback(Result.failure(e)) }
+        }
+    }
+
     private fun parseStatus(body: String): Status {
         val o = JSONObject(body); val a = o.optJSONArray("options") ?: JSONArray()
         val options = (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }

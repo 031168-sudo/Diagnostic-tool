@@ -170,9 +170,10 @@ class AlfaMainActivity : AppCompatActivity() {
         records.forEach { record ->
             val date = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(record.createdAt))
             box.addView(TextView(this).apply { text = "$date\n${record.sessionName}\n${record.complaint.ifBlank { "Жалоба не указана" }}"; textSize = 16f })
-            box.addView(TextView(this).apply { text = when { record.aiResponseUri != null -> "ИИ: заключение получено"; record.aiSent -> "ИИ: диагностика выполняется"; else -> "ИИ: не отправлено" }; textSize = 14f; setPadding(0, 4, 0, 4) })
+            box.addView(TextView(this).apply { text = when { record.aiResponseUri != null -> "ИИ: заключение получено"; record.aiSent -> "ИИ: ответ ожидается"; else -> "ИИ: не отправлено" }; textSize = 14f; setPadding(0, 4, 0, 4) })
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            if (!record.aiSent) row.addView(Button(this).apply { text = "Запустить ИИ"; setOnClickListener { startHistoricalDiagnostic(car, record) } })
+            if (!record.aiSent) row.addView(Button(this).apply { text = "Отправить ИИ"; setOnClickListener { startHistoricalDiagnostic(car, record) } })
+            if (record.aiSent && record.diagnosticId != null) row.addView(Button(this).apply { text = "Открыть диагностику"; setOnClickListener { reopenDiagnostic(record) } })
             if (record.aiResponseUri != null) row.addView(Button(this).apply { text = "Открыть PDF"; setOnClickListener { startActivity(Intent(Intent.ACTION_VIEW).apply { setDataAndType(Uri.parse(record.aiResponseUri), "application/pdf"); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }) } })
             box.addView(row); box.addView(TextView(this).apply { setPadding(0, 0, 0, 16) })
         }
@@ -201,13 +202,19 @@ class AlfaMainActivity : AppCompatActivity() {
         DiagnosticApi.upload(this, car, sessionName, complaint, uris) { result ->
             runOnUiThread {
                 result.onSuccess { id ->
-                    recordStore.markAiSent(sessionName)
+                    recordStore.markAiSent(sessionName, id)
                     startActivity(Intent(this, DiagnosticChatActivity::class.java).apply {
                         putExtra("diagnostic_id", id); putExtra("session_name", sessionName)
                     })
                 }.onFailure { e -> Toast.makeText(this, "Не удалось отправить: ${e.message}", Toast.LENGTH_LONG).show() }
             }
         }
+    }
+
+    private fun reopenDiagnostic(record: DiagnosticRecordStore.Record) {
+        startActivity(Intent(this, DiagnosticChatActivity::class.java).apply {
+            putExtra("diagnostic_id", record.diagnosticId); putExtra("session_name", record.sessionName)
+        })
     }
 
     private fun requestObd() {

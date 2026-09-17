@@ -25,6 +25,8 @@ class DiagnosticChatActivity : AppCompatActivity() {
     private var diagnosticId = ""
     private var sessionName = "diagnostic"
     private var lastConclusion = ""
+    private var lastState = ""
+    private val followUp = mutableListOf<Pair<String, String>>()
     private val busy = AtomicBoolean(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -52,6 +54,7 @@ class DiagnosticChatActivity : AppCompatActivity() {
         DiagnosticApi.status(diagnosticId) { result ->
             runOnUiThread {
                 result.onSuccess { s ->
+                    lastState = s.state
                     stage.text = when (s.state) {
                         "processing" -> "${s.stage}\n${s.message}"
                         "question" -> "Нужна дополнительная информация"
@@ -60,9 +63,11 @@ class DiagnosticChatActivity : AppCompatActivity() {
                         else -> s.message
                     }
                     conversation.text = buildConversation(s)
-                    if (s.state == "question") {
-                        question.text = s.question; answer.isEnabled = true; send.isEnabled = true
-                    } else { question.text = ""; answer.isEnabled = false; send.isEnabled = false }
+                    when (s.state) {
+                        "question" -> { question.text = s.question; answer.hint = "Ваш ответ"; answer.isEnabled = true; send.isEnabled = true }
+                        "completed" -> { question.text = "Можете задать уточняющий вопрос по заключению"; answer.hint = "Ваш вопрос"; answer.isEnabled = true; send.isEnabled = true }
+                        else -> { question.text = ""; answer.isEnabled = false; send.isEnabled = false }
+                    }
                     if (s.state == "completed" && s.conclusion.isNotBlank()) { lastConclusion = s.conclusion; pdf.isEnabled = true }
                     if (s.state == "processing" || s.state == "question") window.decorView.postDelayed({ poll() }, 2000)
                 }.onFailure { e -> stage.text = "Связь с сервером: ${e.message}"; window.decorView.postDelayed({ poll() }, 5000) }
@@ -74,19 +79,38 @@ class DiagnosticChatActivity : AppCompatActivity() {
         val b = StringBuilder()
         if (s.state == "processing") b.append("ИИ получает и сопоставляет данные записи.\n\n")
         if (s.question.isNotBlank()) b.append("ИИ: ${s.question}\n")
-        if (s.conclusion.isNotBlank()) b.append("\nЗАКЛЮЧЕНИЕ\n${s.conclusion}")
+        if (s.conclusion.isNotBlank()) b.append("\nЗАКЛЮЧЕНИЕ\n${s.conclusion}\n")
+        if (followUp.isNotEmpty()) {
+            b.append("\nДИАЛОГ\n")
+            followUp.forEach { (role, text) -> b.append(if (role == "user") "Вы: $text\n" else "ИИ: $text\n") }
+        }
         return b.toString()
     }
 
     private fun submitAnswer() {
         val text = answer.text.toString().trim()
         if (text.isBlank() || !busy.compareAndSet(false, true)) return
-        send.isEnabled = false; question.text = "Ответ отправляется…"
-        DiagnosticApi.answer(diagnosticId, text) { result ->
-            runOnUiThread {
-                busy.set(false)
-                result.onSuccess { answer.setText(""); poll() }
-                    .onFailure { e -> question.text = "Ошибка отправки: ${e.message}"; send.isEnabled = true }
+        send.isEnabled = false
+        if (lastState == "completed") {
+            question.text = "Вопрос отправляется…"
+            DiagnosticApi.chat(diagnosticId, text) { result ->
+                runOnUiThread {
+                    busy.set(false); send.isEnabled = true
+                    result.onSuccess { reply ->
+                        followUp += "user" to text; followUp += "assistant" to reply
+                        answer.setText(""); question.text = "Можете задать уточняющий вопрос по заключению"
+                        conversation.text = buildConversation(DiagnosticApi.Status(diagnosticId, lastState, "", "", "", emptyList(), lastConclusion, ""))
+                    }.onFailure { e -> question.text = "Ошибка отправки: ${e.message}" }
+                }
+            }
+        } else {
+            question.text = "Ответ отправляется…"
+            DiagnosticApi.answer(diagnosticId, text) { result ->
+                runOnUiThread {
+                    busy.set(false)
+                    result.onSuccess { answer.setText(""); poll() }
+                        .onFailure { e -> question.text = "Ошибка отправки: ${e.message}"; send.isEnabled = true }
+                }
             }
         }
     }
