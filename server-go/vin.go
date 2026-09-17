@@ -277,13 +277,14 @@ func (s *Server) handleVIN(w http.ResponseWriter, r *http.Request) {
 		Year:   vinModelYear(vin[9]),
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
 	defer cancel()
 
 	decodeErr := error(nil)
 	decoded, err := s.decodeVINOnline(ctx, vin)
 	if err != nil {
 		decodeErr = err
+		log.Printf("vpic %s -> error: %v", vin, err)
 	} else {
 		mergeOnline(&result, decoded)
 	}
@@ -292,18 +293,36 @@ func (s *Server) handleVIN(w http.ResponseWriter, r *http.Request) {
 		result.Make = wmiMake(result.WMI)
 	}
 
+	if result.Model == "" {
+		ex, exErr := s.lookupExist(ctx, vin)
+		if exErr != nil {
+			log.Printf("exist %s -> error: %v", vin, exErr)
+		} else if ex.Model != "" || ex.Make != "" {
+			result.Make = firstNonEmpty(ex.Make, result.Make)
+			result.Model = firstNonEmpty(ex.Model, result.Model)
+			result.Engine = firstNonEmpty(result.Engine, ex.Engine)
+			result.Drive = firstNonEmpty(result.Drive, ex.Drive)
+			if ex.Year != "" {
+				result.Year = ex.Year
+			}
+			result.Source = "exist"
+		}
+	}
+
 	switch {
-	case result.Make != "" && result.Model != "":
-		result.Source = "vpic"
+	case result.Model != "":
+		if result.Source == "" {
+			result.Source = "vpic"
+		}
 	case result.Make != "":
 		result.Source = "wmi"
-		result.Message = "Марка определена по коду WMI. Модель и характеристики этой сборки онлайн-декодер NHTSA не вернул — заполните их вручную."
+		result.Message = "Марка определена по коду WMI. Модель и характеристики этой сборки онлайн-декодер не вернул — заполните их вручную."
 	default:
 		result.Source = "offline"
 		if decodeErr != nil {
 			result.Message = "Онлайн-декодер NHTSA недоступен: " + decodeErr.Error()
 		} else {
-			result.Message = "Данные по этому VIN не найдены (вероятно, автомобиль не для рынка США). Укажите марку и характеристики вручную."
+			result.Message = "Данные по этому VIN не найдены. Укажите марку и характеристики вручную."
 		}
 	}
 
