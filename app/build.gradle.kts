@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
@@ -16,7 +17,7 @@ android {
         buildConfigField("String", "DIAGNOSTIC_API_URL", "\"${diagnosticApiUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         val diagnosticApiToken = (project.findProperty("diagnosticApiToken") as String?)?.trim() ?: ""
         buildConfigField("String", "DIAGNOSTIC_API_TOKEN", "\"${diagnosticApiToken.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
-        buildFeatures { buildConfig = true }
+        buildFeatures { buildConfig = true; compose = true }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -27,7 +28,13 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    debugImplementation("androidx.compose.ui:ui-tooling")
 }

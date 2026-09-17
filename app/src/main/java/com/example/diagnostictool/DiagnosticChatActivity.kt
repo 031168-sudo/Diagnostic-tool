@@ -5,23 +5,35 @@ import android.graphics.Paint
 import android.graphics.pdf.PdfDocument
 import android.os.Bundle
 import android.provider.MediaStore
-import android.view.Gravity
-import android.widget.Button
-import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
 import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.weight
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.diagnostictool.ui.theme.DiagnosticTheme
 import java.util.concurrent.atomic.AtomicBoolean
 
-class DiagnosticChatActivity : AppCompatActivity() {
-    private lateinit var stage: TextView
-    private lateinit var conversation: TextView
-    private lateinit var question: TextView
-    private lateinit var answer: EditText
-    private lateinit var send: Button
-    private lateinit var pdf: Button
+class DiagnosticChatActivity : ComponentActivity() {
     private var diagnosticId = ""
     private var sessionName = "diagnostic"
     private var lastConclusion = ""
@@ -29,25 +41,31 @@ class DiagnosticChatActivity : AppCompatActivity() {
     private val followUp = mutableListOf<Pair<String, String>>()
     private val busy = AtomicBoolean(false)
 
+    private var stageText by mutableStateOf("")
+    private var conversationText by mutableStateOf("")
+    private var questionText by mutableStateOf("")
+    private var answerHint by mutableStateOf("Ваш ответ")
+    private var answerText by mutableStateOf("")
+    private var answerEnabled by mutableStateOf(false)
+    private var sendEnabled by mutableStateOf(false)
+    private var pdfEnabled by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         diagnosticId = intent.getStringExtra("diagnostic_id") ?: run { finish(); return }
         sessionName = intent.getStringExtra("session_name") ?: "diagnostic"
-        buildUi(); poll()
-    }
-
-    private fun buildUi() {
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 32, 24, 24) }
-        val title = TextView(this).apply { text = "Alfa Diagnostic — ИИ"; textSize = 24f; setGravity(Gravity.CENTER); setPadding(0, 0, 0, 16) }
-        stage = TextView(this).apply { textSize = 18f; setPadding(0, 0, 0, 12) }
-        conversation = TextView(this).apply { textSize = 16f; setPadding(0, 8, 0, 16) }
-        val scroll = ScrollView(this).apply { addView(conversation); layoutParams = LinearLayout.LayoutParams(-1, 0, 1f) }
-        question = TextView(this).apply { textSize = 18f; setPadding(0, 8, 0, 8) }
-        answer = EditText(this).apply { hint = "Ваш ответ"; minLines = 2; gravity = Gravity.TOP }
-        send = Button(this).apply { text = "ОТПРАВИТЬ ОТВЕТ"; isEnabled = false; setOnClickListener { submitAnswer() } }
-        pdf = Button(this).apply { text = "СОХРАНИТЬ ЗАКЛЮЧЕНИЕ PDF"; isEnabled = false; setOnClickListener { savePdf(lastConclusion) } }
-        root.addView(title); root.addView(stage); root.addView(scroll); root.addView(question); root.addView(answer); root.addView(send); root.addView(pdf)
-        setContentView(root)
+        setContent {
+            DiagnosticTheme {
+                ChatScreen(
+                    stageText = stageText, conversationText = conversationText, questionText = questionText,
+                    answerHint = answerHint, answerText = answerText, answerEnabled = answerEnabled,
+                    sendEnabled = sendEnabled, pdfEnabled = pdfEnabled,
+                    onAnswerChange = { answerText = it }, onSend = { submitAnswer() }, onSavePdf = { savePdf(lastConclusion) }
+                )
+            }
+        }
+        poll()
     }
 
     private fun poll() {
@@ -55,22 +73,22 @@ class DiagnosticChatActivity : AppCompatActivity() {
             runOnUiThread {
                 result.onSuccess { s ->
                     lastState = s.state
-                    stage.text = when (s.state) {
+                    stageText = when (s.state) {
                         "processing" -> "${s.stage}\n${s.message}"
                         "question" -> "Нужна дополнительная информация"
                         "completed" -> "Диагностика завершена"
                         "error" -> "Ошибка диагностики: ${s.message}"
                         else -> s.message
                     }
-                    conversation.text = buildConversation(s)
+                    conversationText = buildConversation(s)
                     when (s.state) {
-                        "question" -> { question.text = s.question; answer.hint = "Ваш ответ"; answer.isEnabled = true; send.isEnabled = true }
-                        "completed" -> { question.text = "Можете задать уточняющий вопрос по заключению"; answer.hint = "Ваш вопрос"; answer.isEnabled = true; send.isEnabled = true }
-                        else -> { question.text = ""; answer.isEnabled = false; send.isEnabled = false }
+                        "question" -> { questionText = s.question; answerHint = "Ваш ответ"; answerEnabled = true; sendEnabled = true }
+                        "completed" -> { questionText = "Можете задать уточняющий вопрос по заключению"; answerHint = "Ваш вопрос"; answerEnabled = true; sendEnabled = true }
+                        else -> { questionText = ""; answerEnabled = false; sendEnabled = false }
                     }
-                    if (s.state == "completed" && s.conclusion.isNotBlank()) { lastConclusion = s.conclusion; pdf.isEnabled = true }
+                    if (s.state == "completed" && s.conclusion.isNotBlank()) { lastConclusion = s.conclusion; pdfEnabled = true }
                     if (s.state == "processing" || s.state == "question") window.decorView.postDelayed({ poll() }, 2000)
-                }.onFailure { e -> stage.text = "Связь с сервером: ${e.message}"; window.decorView.postDelayed({ poll() }, 5000) }
+                }.onFailure { e -> stageText = "Связь с сервером: ${e.message}"; window.decorView.postDelayed({ poll() }, 5000) }
             }
         }
     }
@@ -88,28 +106,28 @@ class DiagnosticChatActivity : AppCompatActivity() {
     }
 
     private fun submitAnswer() {
-        val text = answer.text.toString().trim()
+        val text = answerText.trim()
         if (text.isBlank() || !busy.compareAndSet(false, true)) return
-        send.isEnabled = false
+        sendEnabled = false
         if (lastState == "completed") {
-            question.text = "Вопрос отправляется…"
+            questionText = "Вопрос отправляется…"
             DiagnosticApi.chat(diagnosticId, text) { result ->
                 runOnUiThread {
-                    busy.set(false); send.isEnabled = true
+                    busy.set(false); sendEnabled = true
                     result.onSuccess { reply ->
                         followUp += "user" to text; followUp += "assistant" to reply
-                        answer.setText(""); question.text = "Можете задать уточняющий вопрос по заключению"
-                        conversation.text = buildConversation(DiagnosticApi.Status(diagnosticId, lastState, "", "", "", emptyList(), lastConclusion, ""))
-                    }.onFailure { e -> question.text = "Ошибка отправки: ${e.message}" }
+                        answerText = ""; questionText = "Можете задать уточняющий вопрос по заключению"
+                        conversationText = buildConversation(DiagnosticApi.Status(diagnosticId, lastState, "", "", "", emptyList(), lastConclusion, ""))
+                    }.onFailure { e -> questionText = "Ошибка отправки: ${e.message}" }
                 }
             }
         } else {
-            question.text = "Ответ отправляется…"
+            questionText = "Ответ отправляется…"
             DiagnosticApi.answer(diagnosticId, text) { result ->
                 runOnUiThread {
                     busy.set(false)
-                    result.onSuccess { answer.setText(""); poll() }
-                        .onFailure { e -> question.text = "Ошибка отправки: ${e.message}"; send.isEnabled = true }
+                    result.onSuccess { answerText = ""; poll() }
+                        .onFailure { e -> questionText = "Ошибка отправки: ${e.message}"; sendEnabled = true }
                 }
             }
         }
@@ -135,7 +153,7 @@ class DiagnosticChatActivity : AppCompatActivity() {
             contentResolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
             DiagnosticRecordStore(this).setAiResponse(sessionName, uri.toString())
             Toast.makeText(this, "PDF сохранён в Downloads/DiagnosticTool/conclusions", Toast.LENGTH_LONG).show()
-            pdf.isEnabled = false
+            pdfEnabled = false
         } catch (e: Exception) { Toast.makeText(this, "Ошибка PDF: ${e.message}", Toast.LENGTH_LONG).show() }
     }
 
@@ -152,5 +170,24 @@ class DiagnosticChatActivity : AppCompatActivity() {
             if (line.isNotEmpty()) result += line
         }
         return result
+    }
+}
+
+@Composable
+private fun ChatScreen(
+    stageText: String, conversationText: String, questionText: String, answerHint: String,
+    answerText: String, answerEnabled: Boolean, sendEnabled: Boolean, pdfEnabled: Boolean,
+    onAnswerChange: (String) -> Unit, onSend: () -> Unit, onSavePdf: () -> Unit
+) {
+    Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
+        Column(Modifier.padding(padding).fillMaxSize().padding(horizontal = 24.dp, vertical = 24.dp)) {
+            Text("Alfa Diagnostic — ИИ", fontSize = 24.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp))
+            if (stageText.isNotBlank()) Text(stageText, fontSize = 18.sp, modifier = Modifier.padding(bottom = 12.dp))
+            Text(conversationText, fontSize = 16.sp, modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 16.dp))
+            if (questionText.isNotBlank()) Text(questionText, fontSize = 18.sp, modifier = Modifier.padding(bottom = 8.dp))
+            OutlinedTextField(value = answerText, onValueChange = onAnswerChange, enabled = answerEnabled, label = { Text(answerHint) }, minLines = 2, modifier = Modifier.fillMaxWidth())
+            Button(onClick = onSend, enabled = sendEnabled, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("ОТПРАВИТЬ ОТВЕТ") }
+            Button(onClick = onSavePdf, enabled = pdfEnabled, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("СОХРАНИТЬ ЗАКЛЮЧЕНИЕ PDF") }
+        }
     }
 }

@@ -11,13 +11,13 @@ import android.bluetooth.BluetoothProfile
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.ComponentActivity
 import java.util.Locale
 import java.util.UUID
 import kotlin.concurrent.thread
 
 class TargetElm327Ble(
-    private val activity: AppCompatActivity,
+    private val activity: ComponentActivity,
     private val listener: Listener
 ) {
     interface Listener {
