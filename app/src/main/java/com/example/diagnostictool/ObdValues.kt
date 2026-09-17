@@ -10,7 +10,8 @@ data class ObdValues(
     var map: Double? = null,
     var coolant: Double? = null,
     var intake: Double? = null,
-    var voltage: Double? = null
+    var voltage: Double? = null,
+    var speedPidPresent: Boolean = false
 ) {
     fun toDisplay(): String = buildString {
         append("RPM: ").append(rpm?.let { "%.0f".format(Locale.US, it) } ?: "—")
