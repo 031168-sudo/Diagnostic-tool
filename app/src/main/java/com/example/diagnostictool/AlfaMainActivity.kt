@@ -139,6 +139,10 @@ class AlfaMainActivity : AppCompatActivity() {
         val drive = field("Привод *", car.drive)
         val mileage = field("Пробег, км *", car.mileage)
         val vin = field("VIN (необязательно)", car.vin)
+        form.addView(Button(this).apply {
+            text = "Определить по VIN"
+            setOnClickListener { lookupVin(vin.text.toString(), make, model, year, engine, fuel, transmission, drive) }
+        })
         val notes = field("Дополнительная информация (необязательно)", car.notes)
         val dialog = AlertDialog.Builder(this).setTitle(if (car.make.isBlank() && car.model.isBlank()) "Добавить автомобиль" else "Автомобиль")
             .setView(scroll).setNegativeButton("Отмена") { _, _ -> if (returnToDiagnostic && carStore.all().isEmpty()) showFirstCarDialog() }
@@ -160,6 +164,32 @@ class AlfaMainActivity : AppCompatActivity() {
         }
         dialog.show()
         dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
+    }
+
+    private fun lookupVin(vinText: String, make: EditText, model: EditText, year: EditText, engine: EditText, fuel: EditText, transmission: EditText, drive: EditText) {
+        val vin = vinText.trim().uppercase().replace(" ", "")
+        if (vin.length != 17) { Toast.makeText(this, "VIN должен содержать 17 символов", Toast.LENGTH_LONG).show(); return }
+        Toast.makeText(this, "Определяю по VIN…", Toast.LENGTH_SHORT).show()
+        DiagnosticApi.vin(vin) { result ->
+            runOnUiThread {
+                result.onSuccess { info ->
+                    if (info.make.isNotBlank()) make.setText(info.make)
+                    if (info.model.isNotBlank()) model.setText(info.model)
+                    if (info.year.isNotBlank()) year.setText(info.year)
+                    if (info.engine.isNotBlank()) engine.setText(info.engine)
+                    if (info.fuel.isNotBlank()) fuel.setText(info.fuel)
+                    if (info.transmission.isNotBlank()) transmission.setText(info.transmission)
+                    if (info.drive.isNotBlank()) drive.setText(info.drive)
+                    val filled = listOf(info.make, info.model, info.year).count { it.isNotBlank() }
+                    val text = when {
+                        info.message.isNotBlank() -> info.message
+                        filled > 0 -> "Данные заполнены по VIN"
+                        else -> "По VIN найдены только базовые данные"
+                    }
+                    Toast.makeText(this, text, Toast.LENGTH_LONG).show()
+                }.onFailure { e -> Toast.makeText(this, "Не удалось определить: ${e.message}", Toast.LENGTH_LONG).show() }
+            }
+        }
     }
 
     private fun showHistory() {

@@ -14,6 +14,8 @@ android {
         versionName = "1.0"
         val diagnosticApiUrl = (project.findProperty("diagnosticApiUrl") as String?)?.trim() ?: ""
         buildConfigField("String", "DIAGNOSTIC_API_URL", "\"${diagnosticApiUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
+        val diagnosticApiToken = (project.findProperty("diagnosticApiToken") as String?)?.trim() ?: ""
+        buildConfigField("String", "DIAGNOSTIC_API_TOKEN", "\"${diagnosticApiToken.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         buildFeatures { buildConfig = true }
     }
     compileOptions {

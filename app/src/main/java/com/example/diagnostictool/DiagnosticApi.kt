@@ -29,6 +29,18 @@ object DiagnosticApi {
         val pdfUrl: String
     )
 
+    data class VinInfo(
+        val make: String,
+        val model: String,
+        val year: String,
+        val engine: String,
+        val fuel: String,
+        val transmission: String,
+        val drive: String,
+        val body: String,
+        val message: String
+    )
+
     fun upload(context: Context, car: Car, sessionName: String, complaint: String, files: List<Uri>, callback: (Result<String>) -> Unit) {
         executor.execute {
             try {
@@ -38,6 +50,7 @@ object DiagnosticApi {
                     requestMethod = "POST"; doOutput = true; connectTimeout = 30_000; readTimeout = 120_000
                     setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
                     setRequestProperty("Accept", "application/json")
+                    applyHeaders(this)
                 }
                 DataOutputStream(c.outputStream).use { out ->
                     writeField(out, boundary, "car", car.toJson().toString())
@@ -67,6 +80,7 @@ object DiagnosticApi {
                 require(baseUrl.isNotBlank()) { "Адрес сервера диагностики не настроен в этой сборке" }
                 val c = (URL("$baseUrl/v1/diagnostics/$id").openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"; connectTimeout = 15_000; readTimeout = 30_000
+                    applyHeaders(this)
                 }
                 val body = readResponse(c)
                 if (c.responseCode !in 200..299) error("Сервер: ${c.responseCode} $body")
@@ -83,6 +97,7 @@ object DiagnosticApi {
                     requestMethod = "POST"; doOutput = true; connectTimeout = 15_000; readTimeout = 60_000
                     setRequestProperty("Content-Type", "application/json; charset=utf-8")
                     setRequestProperty("Accept", "application/json")
+                    applyHeaders(this)
                 }
                 c.outputStream.use { it.write(JSONObject().put("text", text).toString().toByteArray(Charsets.UTF_8)) }
                 val body = readResponse(c)
@@ -100,11 +115,34 @@ object DiagnosticApi {
                     requestMethod = "POST"; doOutput = true; connectTimeout = 15_000; readTimeout = 60_000
                     setRequestProperty("Content-Type", "application/json; charset=utf-8")
                     setRequestProperty("Accept", "application/json")
+                    applyHeaders(this)
                 }
                 c.outputStream.use { it.write(JSONObject().put("text", text).toString().toByteArray(Charsets.UTF_8)) }
                 val body = readResponse(c)
                 if (c.responseCode !in 200..299) error("Сервер: ${c.responseCode} $body")
                 callback(Result.success(JSONObject(body).optString("answer")))
+            } catch (e: Exception) { callback(Result.failure(e)) }
+        }
+    }
+
+    fun vin(vin: String, callback: (Result<VinInfo>) -> Unit) {
+        executor.execute {
+            try {
+                require(baseUrl.isNotBlank()) { "Адрес сервера диагностики не настроен в этой сборке" }
+                val c = (URL("$baseUrl/v1/vin/$vin").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"; connectTimeout = 15_000; readTimeout = 30_000
+                    setRequestProperty("Accept", "application/json")
+                    applyHeaders(this)
+                }
+                val body = readResponse(c)
+                if (c.responseCode !in 200..299) error("Сервер: ${c.responseCode} $body")
+                val o = JSONObject(body)
+                callback(Result.success(VinInfo(
+                    make = o.optString("make"), model = o.optString("model"), year = o.optString("year"),
+                    engine = o.optString("engine"), fuel = o.optString("fuel"),
+                    transmission = o.optString("transmission"), drive = o.optString("drive"), body = o.optString("body"),
+                    message = o.optString("message")
+                )))
             } catch (e: Exception) { callback(Result.failure(e)) }
         }
     }
@@ -122,6 +160,11 @@ object DiagnosticApi {
     private fun displayName(context: Context, uri: Uri): String? {
         context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) return it.getString(0) }
         return uri.lastPathSegment
+    }
+
+    private fun applyHeaders(c: HttpURLConnection) {
+        val token = BuildConfig.DIAGNOSTIC_API_TOKEN
+        if (token.isNotBlank()) c.setRequestProperty("X-Api-Key", token)
     }
 
     private fun readResponse(c: HttpURLConnection): String {
