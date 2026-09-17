@@ -14,9 +14,9 @@ import java.util.UUID
 import java.util.concurrent.Executors
 
 object DiagnosticApi {
-    // The production endpoint is configured here once the server is deployed.
-    // Keep the OpenAI key on the server; it must never be placed in the APK.
-    private const val BASE_URL = "https://m.alfanomy.ru/diagnostic-api"
+    // Set this to the address where the standalone Diagnostic Tool backend is deployed.
+    // It must never point to another project's server.
+    private const val BASE_URL = "https://<YOUR-DIAGNOSTIC-SERVER>"
     private val executor = Executors.newCachedThreadPool()
 
     data class Status(
@@ -30,23 +30,13 @@ object DiagnosticApi {
         val pdfUrl: String
     )
 
-    fun upload(
-        context: Context,
-        car: Car,
-        sessionName: String,
-        complaint: String,
-        files: List<Uri>,
-        callback: (Result<String>) -> Unit
-    ) {
+    fun upload(context: Context, car: Car, sessionName: String, complaint: String, files: List<Uri>, callback: (Result<String>) -> Unit) {
         executor.execute {
             try {
                 val boundary = "----AlfaDiagnostic${UUID.randomUUID()}"
                 val url = URL("$BASE_URL/v1/diagnostics")
                 val c = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    doOutput = true
-                    connectTimeout = 30_000
-                    readTimeout = 120_000
+                    requestMethod = "POST"; doOutput = true; connectTimeout = 30_000; readTimeout = 120_000
                     setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
                     setRequestProperty("Accept", "application/json")
                 }
@@ -58,7 +48,7 @@ object DiagnosticApi {
                         val name = displayName(context, uri) ?: "session-file"
                         val mime = context.contentResolver.getType(uri) ?: "application/octet-stream"
                         out.writeBytes("--$boundary\r\n")
-                        out.writeBytes("Content-Disposition: form-data; name=\"files\"; filename=\"${name.replace(\"\\\"\", \"_\")}\"\r\n")
+                        out.writeBytes("Content-Disposition: form-data; name=\"files\"; filename=\"${name.replace("\"", "_")}\"\r\n")
                         out.writeBytes("Content-Type: $mime\r\n\r\n")
                         context.contentResolver.openInputStream(uri)?.use { input -> input.copyTo(out) }
                         out.writeBytes("\r\n")
@@ -68,9 +58,7 @@ object DiagnosticApi {
                 val body = readResponse(c)
                 if (c.responseCode !in 200..299) error("Сервер: ${c.responseCode} $body")
                 callback(Result.success(JSONObject(body).getString("id")))
-            } catch (e: Exception) {
-                callback(Result.failure(e))
-            }
+            } catch (e: Exception) { callback(Result.failure(e)) }
         }
     }
 
@@ -104,8 +92,7 @@ object DiagnosticApi {
     }
 
     private fun parseStatus(body: String): Status {
-        val o = JSONObject(body)
-        val a = o.optJSONArray("options") ?: JSONArray()
+        val o = JSONObject(body); val a = o.optJSONArray("options") ?: JSONArray()
         val options = (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
         return Status(o.optString("id"), o.optString("state"), o.optString("stage"), o.optString("message"), o.optString("question"), options, o.optString("conclusion"), o.optString("pdfUrl"))
     }
@@ -115,9 +102,7 @@ object DiagnosticApi {
     }
 
     private fun displayName(context: Context, uri: Uri): String? {
-        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
-            if (it.moveToFirst()) return it.getString(0)
-        }
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) return it.getString(0) }
         return uri.lastPathSegment
     }
 
