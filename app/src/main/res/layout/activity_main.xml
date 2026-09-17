@@ -1,18 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent">
-    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="20dp">
-        <TextView android:id="@+id/currentCar" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Автомобиль" android:textSize="24sp" android:textStyle="bold"/>
-        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="8dp">
-            <Button android:id="@+id/changeCar" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Сменить"/>
-            <Button android:id="@+id/addCar" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="+ Добавить"/>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent" android:background="@color/diag_black" android:fillViewport="true">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingLeft="20dp" android:paddingRight="20dp" android:paddingBottom="24dp" android:paddingTop="@android:dimen/status_bar_height">
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Alfa Diagnostic" android:textColor="@color/diag_red" android:textSize="28sp" android:textStyle="bold" android:gravity="center" android:paddingTop="8dp" android:paddingBottom="14dp"/>
+        <TextView android:id="@+id/currentCar" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Автомобиль" android:textColor="@color/diag_white" android:textSize="24sp" android:textStyle="bold" android:gravity="center"/>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="10dp">
+            <Button android:id="@+id/changeCar" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Сменить" android:textColor="@color/diag_white" android:backgroundTint="@color/diag_red"/>
+            <Button android:id="@+id/addCar" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:layout_marginStart="8dp" android:text="+ Добавить" android:textColor="@color/diag_white" android:backgroundTint="@color/diag_red"/>
         </LinearLayout>
-        <Button android:id="@+id/history" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="История диагностики"/>
-        <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="12dp" android:background="#888888"/>
-        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="Сбор информации" android:textSize="20sp" android:textStyle="bold"/>
-        <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="OBD-адаптер не подключён — запись возможна с GPS" android:textSize="16sp"/>
-        <Button android:id="@+id/connect" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="Подключить ELM327"/>
-        <TextView android:id="@+id/obdValues" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="RPM: —\nSpeed: —\nLoad: —\nThrottle: —\nMAP: —\nCoolant: —\nIntake: —\nVoltage: —" android:textSize="18sp"/>
-        <Button android:id="@+id/record" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="НАЧАТЬ ЗАПИСЬ"/>
-        <TextView android:id="@+id/recordStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="Запись остановлена" android:textSize="16sp"/>
+        <Button android:id="@+id/history" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="История диагностики" android:textColor="@color/diag_white" android:backgroundTint="@color/diag_gray"/>
+        <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="14dp" android:background="@color/diag_gray"/>
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="Сбор информации" android:textColor="@color/diag_white" android:textSize="20sp" android:textStyle="bold"/>
+        <TextView android:id="@+id/status" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="OBD-адаптер не подключён — запись возможна с GPS" android:textColor="@color/diag_light_gray" android:textSize="16sp"/>
+        <Button android:id="@+id/connect" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="Подключить ELM327" android:textColor="@color/diag_white" android:backgroundTint="@color/diag_red"/>
+        <TextView android:id="@+id/obdValues" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:text="RPM: —\nSpeed: —\nLoad: —\nThrottle: —\nMAP: —\nCoolant: —\nIntake: —\nVoltage: —" android:textColor="@color/diag_white" android:textSize="18sp"/>
+        <Button android:id="@+id/record" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="НАЧАТЬ ЗАПИСЬ" android:textColor="@color/diag_white" android:backgroundTint="@color/diag_red"/>
+        <TextView android:id="@+id/recordStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:text="Запись остановлена" android:textColor="@color/diag_light_gray" android:textSize="16sp"/>
     </LinearLayout>
 </ScrollView>
