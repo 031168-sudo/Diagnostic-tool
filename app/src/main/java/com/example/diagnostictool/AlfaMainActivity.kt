@@ -58,7 +58,8 @@ class AlfaMainActivity : ComponentActivity() {
     private val carStore by lazy { CarStore(this) }
     private val recordStore by lazy { DiagnosticRecordStore(this) }
     private var lastSessionUris: List<Uri> = emptyList()
-    private val permissionRequest = 10
+    private val obdPermissionRequest = 10
+    private val recordPermissionRequest = 11
 
     private var currentCar by mutableStateOf<Car?>(null)
     private var statusText by mutableStateOf("OBD-адаптер не подключён — запись возможна с GPS")
@@ -276,22 +277,30 @@ class AlfaMainActivity : ComponentActivity() {
 
     private fun requestObd() {
         val permissions = if (Build.VERSION.SDK_INT >= 31) arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT) else emptyArray()
-        if (permissions.any { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }) requestPermissions(permissions, permissionRequest)
+        if (permissions.any { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }) requestPermissions(permissions, obdPermissionRequest)
         else { configureObd(); obd.scan() }
     }
 
     override fun onRequestPermissionsResult(request: Int, permissions: Array<String>, results: IntArray) {
         super.onRequestPermissionsResult(request, permissions, results)
-        if (request == permissionRequest && results.all { it == PackageManager.PERMISSION_GRANTED }) { configureObd(); obd.scan() }
+        when (request) {
+            obdPermissionRequest -> if (results.all { it == PackageManager.PERMISSION_GRANTED }) { configureObd(); obd.scan() }
+            recordPermissionRequest -> if (results.all { it == PackageManager.PERMISSION_GRANTED }) startRecording()
+        }
+    }
+
+    private fun startRecording() {
+        val car = currentCar ?: return
+        recorder = PublicSessionRecorder(this, car) { text -> runOnUiThread { recordStatusText = text } }
+        recorder!!.start(); recording = true
     }
 
     private fun toggleRecording() {
         val car = currentCar ?: run { firstCarDialog = true; return }
         if (recorder == null) {
             val needed = if (Build.VERSION.SDK_INT >= 23) arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.ACCESS_FINE_LOCATION) else arrayOf(Manifest.permission.RECORD_AUDIO)
-            if (needed.any { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }) { requestPermissions(needed, permissionRequest); return }
-            recorder = PublicSessionRecorder(this, car) { text -> runOnUiThread { recordStatusText = text } }
-            recorder!!.start(); recording = true
+            if (needed.any { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }) { requestPermissions(needed, recordPermissionRequest); return }
+            startRecording()
         } else {
             val r = recorder!!; r.stop(); lastSessionUris = r.sessionUris(); recorder = null; recording = false
             postRecordDialog = PostRecordState(car, r.sessionName)
