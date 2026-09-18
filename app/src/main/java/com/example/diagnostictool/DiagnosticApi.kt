@@ -60,13 +60,13 @@ object DiagnosticApi {
                     files.forEach { uri ->
                         val name = displayName(context, uri) ?: "session-file"
                         val mime = context.contentResolver.getType(uri) ?: "application/octet-stream"
-                        out.writeBytes("--$boundary\r\n")
-                        out.writeBytes("Content-Disposition: form-data; name=\"files\"; filename=\"${name.replace("\"", "_")}\"\r\n")
-                        out.writeBytes("Content-Type: $mime\r\n\r\n")
+                        out.write("--$boundary\r\n".toByteArray(Charsets.UTF_8))
+                        out.write("Content-Disposition: form-data; name=\"files\"; filename=\"${name.replace("\"", "_")}\"\r\n".toByteArray(Charsets.UTF_8))
+                        out.write("Content-Type: $mime\r\n\r\n".toByteArray(Charsets.UTF_8))
                         context.contentResolver.openInputStream(uri)?.use { input -> input.copyTo(out) }
-                        out.writeBytes("\r\n")
+                        out.write("\r\n".toByteArray(Charsets.UTF_8))
                     }
-                    out.writeBytes("--$boundary--\r\n")
+                    out.write("--$boundary--\r\n".toByteArray(Charsets.UTF_8))
                 }
                 val body = readResponse(c)
                 if (c.responseCode !in 200..299) error("Сервер: ${c.responseCode} $body")
@@ -155,7 +155,9 @@ object DiagnosticApi {
     }
 
     private fun writeField(out: DataOutputStream, boundary: String, name: String, value: String) {
-        out.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n")
+        out.write("--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n".toByteArray(Charsets.UTF_8))
+        out.write(value.toByteArray(Charsets.UTF_8))
+        out.write("\r\n".toByteArray(Charsets.UTF_8))
     }
 
     private fun displayName(context: Context, uri: Uri): String? {

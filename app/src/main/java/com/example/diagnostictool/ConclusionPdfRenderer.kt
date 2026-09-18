@@ -9,10 +9,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 class ConclusionPdfRenderer(private val pageWidth: Int = 595, private val pageHeight: Int = 842) {
-    private val margin = 40f
+    private val margin = 48f
     private val contentWidth = pageWidth - margin * 2
-    private val lineHeight = 15f
-    private val rowPad = 5f
+    private val gridColor = Color.rgb(210, 210, 210)
 
     private val document = PdfDocument()
     private var pageNo = 0
@@ -22,45 +21,58 @@ class ConclusionPdfRenderer(private val pageWidth: Int = 595, private val pageHe
     private var sectionNo = 0
 
     private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textSize = 17f
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        color = Color.BLACK
+        textSize = 18f
+        typeface = Typeface.create("sans-serif", Typeface.BOLD)
+        color = Color.rgb(20, 20, 20)
         textAlign = Paint.Align.CENTER
+        letterSpacing = 0.03f
     }
     private val subtitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textSize = 10.5f
-        typeface = Typeface.DEFAULT
-        color = Color.DKGRAY
+        textSize = 11f
+        typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+        color = Color.rgb(90, 90, 90)
         textAlign = Paint.Align.CENTER
     }
     private val headingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textSize = 13f
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        color = Color.BLACK
+        textSize = 13.5f
+        typeface = Typeface.create("sans-serif", Typeface.BOLD)
+        color = Color.rgb(15, 15, 15)
     }
     private val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textSize = 10.5f
-        typeface = Typeface.DEFAULT
-        color = Color.BLACK
+        textSize = 11f
+        typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+        color = Color.rgb(30, 30, 30)
     }
-    private val linePaint = Paint().apply {
-        color = Color.rgb(200, 200, 200)
-        strokeWidth = 0.7f
+    private val tablePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 10.5f
+        typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+        color = Color.rgb(30, 30, 30)
+    }
+    private val gridPaint = Paint().apply {
+        color = gridColor
+        strokeWidth = 0.8f
         style = Paint.Style.STROKE
     }
 
+    private val bodyLine = lineHeight(bodyPaint)
+    private val tableLine = lineHeight(tablePaint)
+
     fun render(root: JSONObject): PdfDocument {
+        newPage()
         val title = root.optString("title").ifBlank { "ДИАГНОСТИЧЕСКОЕ ЗАКЛЮЧЕНИЕ" }
         val subtitle = root.optString("subtitle")
-        newPage()
-        drawCentered(title, titlePaint, 6f)
-        if (subtitle.isNotBlank()) drawCentered(subtitle, subtitlePaint, 10f)
-        y += 8f
+        centered(title, titlePaint)
+        y += 6f
+        if (subtitle.isNotBlank()) {
+            centered(subtitle, subtitlePaint)
+            y += 4f
+        }
+        y += 10f
 
         val complaint = root.optString("complaint")
         if (complaint.isNotBlank()) {
             numbered("Жалоба клиента")
-            paragraph(complaint)
+            paragraph(complaint, bodyPaint, bodyLine)
         }
 
         val carRows = rows(root.optJSONArray("carRows"))
@@ -74,15 +86,15 @@ class ConclusionPdfRenderer(private val pageWidth: Int = 595, private val pageHe
         val dataRanges = root.optString("dataRanges")
         if (dataIntro.isNotBlank() || fileRows.isNotEmpty() || dataRanges.isNotBlank()) {
             numbered("Полученные данные")
-            if (dataIntro.isNotBlank()) paragraph(dataIntro)
+            if (dataIntro.isNotBlank()) paragraph(dataIntro, bodyPaint, bodyLine)
             if (fileRows.isNotEmpty()) table(fileRows)
-            if (dataRanges.isNotBlank()) paragraph(dataRanges)
+            if (dataRanges.isNotBlank()) paragraph(dataRanges, bodyPaint, bodyLine)
         }
 
         val analysis = root.optString("analysis")
         if (analysis.isNotBlank()) {
             numbered("Что анализировалось")
-            paragraph(analysis)
+            paragraph(analysis, bodyPaint, bodyLine)
         }
 
         val results = strings(root.optJSONArray("results"))
@@ -95,23 +107,23 @@ class ConclusionPdfRenderer(private val pageWidth: Int = 595, private val pageHe
         val priority = root.optString("priority")
         if (conclusion.isNotBlank() || priority.isNotBlank()) {
             numbered("Диагностическое заключение")
-            if (conclusion.isNotBlank()) paragraph(conclusion)
+            if (conclusion.isNotBlank()) paragraph(conclusion, bodyPaint, bodyLine)
             if (priority.isNotBlank()) {
                 val text = if (priority.trimStart().startsWith("Приоритет", true)) priority else "Приоритет проверки: $priority"
-                paragraph(text)
+                paragraph(text, bodyPaint, bodyLine)
             }
         }
 
         val recommended = root.optString("recommended")
         if (recommended.isNotBlank()) {
             numbered("Рекомендуемая проверка автомобиля")
-            paragraph(recommended)
+            paragraph(recommended, bodyPaint, bodyLine)
         }
 
         val limitation = root.optString("limitation")
         if (limitation.isNotBlank()) {
             section("Ограничение заключения")
-            paragraph(limitation)
+            paragraph(limitation, bodyPaint, bodyLine)
         }
 
         finishPage()
@@ -120,11 +132,7 @@ class ConclusionPdfRenderer(private val pageWidth: Int = 595, private val pageHe
 
     fun renderPlainText(text: String): PdfDocument {
         newPage()
-        for (line in wrap(text.replace("\r", ""), bodyPaint, contentWidth)) {
-            ensure(lineHeight)
-            draw(line, margin, bodyPaint)
-            y += lineHeight
-        }
+        paragraph(text, bodyPaint, bodyLine)
         finishPage()
         return document
     }
@@ -135,69 +143,80 @@ class ConclusionPdfRenderer(private val pageWidth: Int = 595, private val pageHe
     }
 
     private fun section(title: String) {
-        ensure(24f)
-        y += 10f
-        draw(title, margin, headingPaint)
-        y += 20f
+        val h = lineHeight(headingPaint)
+        ensure(h + 16f)
+        y += 14f
+        val baseline = y - headingPaint.fontMetrics.ascent
+        canvas?.drawText(title, margin, baseline, headingPaint)
+        y += h + 7f
     }
 
-    private fun paragraph(text: String) {
-        for (line in wrap(text.trim(), bodyPaint, contentWidth)) {
-            ensure(lineHeight)
-            draw(line, margin, bodyPaint)
-            y += lineHeight
-        }
-        y += 6f
+    private fun centered(text: String, paint: Paint) {
+        val h = lineHeight(paint)
+        ensure(h)
+        val baseline = y - paint.fontMetrics.ascent
+        canvas?.drawText(text, pageWidth / 2f, baseline, paint)
+        y += h
     }
 
-    private fun bullets(items: List<String>) {
-        val indent = 14f
-        for (item in items) {
-            val lines = wrap(item.trim(), bodyPaint, contentWidth - indent)
-            for ((i, line) in lines.withIndex()) {
-                ensure(lineHeight)
-                if (i == 0) draw("•", margin, bodyPaint)
-                draw(line, margin + indent, bodyPaint)
-                y += lineHeight
-            }
-            y += 4f
-        }
-        y += 4f
-    }
-
-    private fun table(rows: List<Pair<String, String>>) {
-        val labelW = contentWidth * 0.36f
-        val valueW = contentWidth - labelW
-        for ((label, value) in rows) {
-            val labelLines = wrap(label, bodyPaint, labelW - rowPad * 2)
-            val valueLines = wrap(value, bodyPaint, valueW - rowPad * 2)
-            val rowH = maxOf(labelLines.size, valueLines.size) * lineHeight + rowPad * 2
-            ensure(rowH + 1f)
-            val top = y
-            val bottom = y + rowH
-            val left = margin
-            val mid = margin + labelW
-            val right = margin + contentWidth
-            canvas?.drawRect(left, top, right, bottom, linePaint)
-            canvas?.drawLine(mid, top, mid, bottom, linePaint)
-            var ty = top + rowPad + lineHeight - 3f
-            for (line in labelLines) { draw(line, left + rowPad, bodyPaint); ty += lineHeight }
-            ty = top + rowPad + lineHeight - 3f
-            for (line in valueLines) { draw(line, mid + rowPad, bodyPaint); ty += lineHeight }
-            y = bottom
+    private fun paragraph(text: String, paint: Paint, lineH: Float) {
+        val fm = paint.fontMetrics
+        for (line in wrap(text.trim(), paint, contentWidth)) {
+            ensure(lineH)
+            canvas?.drawText(line, margin, y - fm.ascent, paint)
+            y += lineH
         }
         y += 8f
     }
 
-    private fun drawCentered(text: String, paint: Paint, gap: Float) {
-        ensure(20f + gap)
-        y += gap
-        canvas?.drawText(text, pageWidth / 2f, y, paint)
-        y += 18f
+    private fun bullets(items: List<String>) {
+        val indent = 16f
+        val fm = bodyPaint.fontMetrics
+        for (item in items) {
+            val lines = wrap(item.trim(), bodyPaint, contentWidth - indent)
+            for ((i, line) in lines.withIndex()) {
+                ensure(bodyLine)
+                if (i == 0) canvas?.drawText("•", margin + 2f, y - fm.ascent, bodyPaint)
+                canvas?.drawText(line, margin + indent, y - fm.ascent, bodyPaint)
+                y += bodyLine
+            }
+            y += 5f
+        }
+        y += 3f
     }
 
-    private fun draw(text: String, x: Float, paint: Paint) {
-        canvas?.drawText(text, x, y, paint)
+    private fun table(rows: List<Pair<String, String>>) {
+        val labelW = contentWidth * 0.34f
+        val valueW = contentWidth - labelW
+        val hPad = 8f
+        val vPad = 6f
+        val fm = tablePaint.fontMetrics
+        val left = margin
+        val mid = margin + labelW
+        val right = margin + contentWidth
+        for ((label, value) in rows) {
+            val labelLines = wrap(label, tablePaint, labelW - hPad * 2)
+            val valueLines = wrap(value, tablePaint, valueW - hPad * 2)
+            val lineCount = maxOf(labelLines.size, valueLines.size, 1)
+            val rowH = lineCount * tableLine + vPad * 2
+            ensure(rowH)
+            val top = y
+            val bottom = top + rowH
+            canvas?.drawRect(left, top, right, bottom, gridPaint)
+            canvas?.drawLine(mid, top, mid, bottom, gridPaint)
+            var baseline = top + vPad - fm.ascent
+            for (line in labelLines) {
+                canvas?.drawText(line, left + hPad, baseline, tablePaint)
+                baseline += tableLine
+            }
+            baseline = top + vPad - fm.ascent
+            for (line in valueLines) {
+                canvas?.drawText(line, mid + hPad, baseline, tablePaint)
+                baseline += tableLine
+            }
+            y = bottom
+        }
+        y += 10f
     }
 
     private fun ensure(needed: Float) {
@@ -218,6 +237,11 @@ class ConclusionPdfRenderer(private val pageWidth: Int = 595, private val pageHe
         page?.let { document.finishPage(it) }
         page = null
         canvas = null
+    }
+
+    private fun lineHeight(paint: Paint): Float {
+        val fm = paint.fontMetrics
+        return (fm.descent - fm.ascent) * 1.32f
     }
 
     private fun wrap(text: String, paint: Paint, maxWidth: Float): List<String> {
