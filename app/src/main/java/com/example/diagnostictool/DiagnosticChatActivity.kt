@@ -1,8 +1,6 @@
 package com.example.diagnostictool
 
 import android.content.ContentValues
-import android.graphics.Paint
-import android.graphics.pdf.PdfDocument
 import android.os.Bundle
 import android.provider.MediaStore
 import android.widget.Toast
@@ -30,12 +28,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.diagnostictool.ui.theme.DiagnosticTheme
+import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
 
 class DiagnosticChatActivity : ComponentActivity() {
     private var diagnosticId = ""
     private var sessionName = "diagnostic"
     private var lastConclusion = ""
+    private var lastDocument = ""
     private var lastState = ""
     private val followUp = mutableListOf<Pair<String, String>>()
     private val busy = AtomicBoolean(false)
@@ -60,7 +60,7 @@ class DiagnosticChatActivity : ComponentActivity() {
                     stageText = stageText, conversationText = conversationText, questionText = questionText,
                     answerHint = answerHint, answerText = answerText, answerEnabled = answerEnabled,
                     sendEnabled = sendEnabled, pdfEnabled = pdfEnabled,
-                    onAnswerChange = { answerText = it }, onSend = { submitAnswer() }, onSavePdf = { savePdf(lastConclusion) }
+                    onAnswerChange = { answerText = it }, onSend = { submitAnswer() }, onSavePdf = { savePdf(lastDocument, lastConclusion) }
                 )
             }
         }
@@ -85,7 +85,9 @@ class DiagnosticChatActivity : ComponentActivity() {
                         "completed" -> { questionText = "Можете задать уточняющий вопрос по заключению"; answerHint = "Ваш вопрос"; answerEnabled = true; sendEnabled = true }
                         else -> { questionText = ""; answerEnabled = false; sendEnabled = false }
                     }
-                    if (s.state == "completed" && s.conclusion.isNotBlank()) { lastConclusion = s.conclusion; pdfEnabled = true }
+                    if (s.state == "completed" && (s.conclusion.isNotBlank() || s.document.isNotBlank())) {
+                        lastConclusion = s.conclusion; lastDocument = s.document; pdfEnabled = true
+                    }
                     if (s.state == "processing" || s.state == "question") window.decorView.postDelayed({ poll() }, 2000)
                 }.onFailure { e -> stageText = "Связь с сервером: ${e.message}"; window.decorView.postDelayed({ poll() }, 5000) }
             }
@@ -132,19 +134,15 @@ class DiagnosticChatActivity : ComponentActivity() {
         }
     }
 
-    private fun savePdf(text: String) {
-        if (text.isBlank()) return
+    private fun savePdf(documentJson: String, fallbackText: String) {
+        if (documentJson.isBlank() && fallbackText.isBlank()) return
         try {
-            val doc = PdfDocument(); val pageWidth = 595; val pageHeight = 842
-            var pageNumber = 1
-            var page = doc.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create())
-            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 12f; typeface = android.graphics.Typeface.DEFAULT }
-            var y = 48f
-            for (line in wrap(text, paint, pageWidth - 72f)) {
-                if (y > pageHeight - 48) { doc.finishPage(page); pageNumber++; page = doc.startPage(PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create()); y = 48f }
-                page.canvas.drawText(line, 36f, y, paint); y += 18f
-            }
-            doc.finishPage(page)
+            val renderer = ConclusionPdfRenderer()
+            val doc = if (documentJson.isNotBlank()) {
+                val root = JSONObject(documentJson)
+                if (root.optString("title").isNotBlank() || root.has("carRows") || root.optString("complaint").isNotBlank()) renderer.render(root)
+                else renderer.renderPlainText(fallbackText)
+            } else renderer.renderPlainText(fallbackText)
             val values = ContentValues().apply { put(MediaStore.Downloads.DISPLAY_NAME, "Заключение_$sessionName.pdf"); put(MediaStore.Downloads.MIME_TYPE, "application/pdf"); put(MediaStore.Downloads.RELATIVE_PATH, "Download/DiagnosticTool/conclusions"); put(MediaStore.Downloads.IS_PENDING, 1) }
             val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("Не удалось создать PDF")
             contentResolver.openOutputStream(uri)?.use { doc.writeTo(it) } ?: error("Не удалось записать PDF")
@@ -154,21 +152,6 @@ class DiagnosticChatActivity : ComponentActivity() {
             Toast.makeText(this, "PDF сохранён в Downloads/DiagnosticTool/conclusions", Toast.LENGTH_LONG).show()
             pdfEnabled = false
         } catch (e: Exception) { Toast.makeText(this, "Ошибка PDF: ${e.message}", Toast.LENGTH_LONG).show() }
-    }
-
-    private fun wrap(text: String, paint: Paint, maxWidth: Float): List<String> {
-        val result = mutableListOf<String>()
-        text.replace("\r", "").split("\n").forEach { paragraph ->
-            if (paragraph.isBlank()) { result += ""; return@forEach }
-            var line = ""
-            paragraph.split(" ").forEach { word ->
-                val candidate = if (line.isEmpty()) word else "$line $word"
-                if (paint.measureText(candidate) <= maxWidth) line = candidate
-                else { if (line.isNotEmpty()) result += line; line = word }
-            }
-            if (line.isNotEmpty()) result += line
-        }
-        return result
     }
 }
 

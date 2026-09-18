@@ -16,10 +16,18 @@ import (
 const systemPrompt = `Ты — автомобильный диагност приложения Diagnostic Tool. Анализируй только предоставленные данные и явно отделяй факт от гипотезы. Сопоставляй audio, OBD, GPS и датчики по общей временной шкале. Не утверждай неисправность конкретной детали, если данные её не доказывают. Если для различения причин нужен простой дополнительный тест или вопрос владельцу — задай его.
 
 Отвечай СТРОГО одним JSON-объектом без markdown:
-{"state":"question|completed","stage":"...","message":"...","question":"...","options":["..."],"conclusion":"..."}
-Для question поле conclusion пустое. Для completed question пустое.
+{"state":"question|completed","stage":"...","message":"...","question":"...","options":["..."],"conclusion":"...","document":{"complaint":"...","analysis":"...","results":["..."],"conclusion":"...","priority":"...","recommended":"...","limitation":"..."}}
+Для question поля conclusion и document пустые/отсутствуют. Для completed question пустое.
 
-При завершении заключение должно быть техническим и структурированным: исходная жалоба; что реально обнаружено в данных; корреляции и временные закономерности; возможные причины с уровнем уверенности; что проверить в первую очередь; контрольные проверки; ограничения анализа.`
+При завершении заключение должно быть техническим и структурированным. Заполняй поля document:
+- complaint — жалоба владельца, кратко и по существу (2–4 предложения);
+- analysis — что и как анализировалось: какие данные сопоставлялись и по какой шкале;
+- results — массив строк, конкретные наблюдения по данным (корреляции, временные закономерности, что исключено);
+- conclusion — диагностическое заключение: наиболее согласующаяся группа причин;
+- priority — что проверить в первую очередь (нумерованный список в одну строку);
+- recommended — как и где проводить проверку автомобиля;
+- limitation — ограничения анализа.
+Поле conclusion продублируй связным текстом всего заключения для чата.`
 
 const followUpPrompt = `Ты продолжаешь диалог по автомобильной диагностике. Отвечай по имеющимся данным, не придумывай измерения и чётко отделяй факт от предположения.`
 
@@ -32,6 +40,7 @@ type modelResult struct {
 	Question   string   `json:"question"`
 	Options    []string `json:"options"`
 	Conclusion string   `json:"conclusion"`
+	Document   docPart  `json:"document"`
 }
 
 func parseModelJSON(text string) (modelResult, error) {
@@ -303,6 +312,14 @@ func (s *Server) runAnalysis(id, extra string) {
 		return
 	}
 
+	var doc *ConclusionDoc
+	if firstNonEmpty(result.State, "question") == "completed" {
+		doc = buildConclusionDoc(st, metrics, result.Document)
+		if doc.Conclusion == "" {
+			doc.Conclusion = result.Conclusion
+		}
+	}
+
 	s.store.Update(id, func(st *SessionState) {
 		st.State = firstNonEmpty(result.State, "question")
 		st.Stage = firstNonEmpty(result.Stage, "Анализ")
@@ -313,6 +330,9 @@ func (s *Server) runAnalysis(id, extra string) {
 			st.Options = []string{}
 		}
 		st.Conclusion = result.Conclusion
+		if doc != nil {
+			st.Document = doc
+		}
 		entry := extra
 		if entry == "" {
 			entry = "initial"

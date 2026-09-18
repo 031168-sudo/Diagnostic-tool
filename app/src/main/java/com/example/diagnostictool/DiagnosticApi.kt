@@ -26,7 +26,8 @@ object DiagnosticApi {
         val question: String,
         val options: List<String>,
         val conclusion: String,
-        val pdfUrl: String
+        val pdfUrl: String,
+        val document: String = ""
     )
 
     data class VinInfo(
@@ -150,7 +151,7 @@ object DiagnosticApi {
     private fun parseStatus(body: String): Status {
         val o = JSONObject(body); val a = o.optJSONArray("options") ?: JSONArray()
         val options = (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
-        return Status(o.optString("id"), o.optString("state"), o.optString("stage"), o.optString("message"), o.optString("question"), options, o.optString("conclusion"), o.optString("pdfUrl"))
+        return Status(o.optString("id"), o.optString("state"), o.optString("stage"), o.optString("message"), o.optString("question"), options, o.optString("conclusion"), o.optString("pdfUrl"), o.optJSONObject("document")?.toString() ?: "")
     }
 
     private fun writeField(out: DataOutputStream, boundary: String, name: String, value: String) {

@@ -31,25 +31,27 @@ type SessionState struct {
 	Message     string        `json:"message"`
 	Question    string        `json:"question"`
 	Options     []string      `json:"options"`
-	Conclusion  string        `json:"conclusion"`
-	Car         string        `json:"car"`
-	Complaint   string        `json:"complaint"`
-	SessionName string        `json:"sessionName"`
-	Files       []FileInfo    `json:"files"`
-	History     []HistoryItem `json:"history"`
-	CreatedAt   string        `json:"createdAt"`
-	UpdatedAt   string        `json:"updatedAt"`
+	Conclusion  string         `json:"conclusion"`
+	Document    *ConclusionDoc `json:"document,omitempty"`
+	Car         string         `json:"car"`
+	Complaint   string         `json:"complaint"`
+	SessionName string         `json:"sessionName"`
+	Files       []FileInfo     `json:"files"`
+	History     []HistoryItem  `json:"history"`
+	CreatedAt   string         `json:"createdAt"`
+	UpdatedAt   string         `json:"updatedAt"`
 }
 
 type PublicState struct {
-	ID         string   `json:"id"`
-	State      string   `json:"state"`
-	Stage      string   `json:"stage"`
-	Message    string   `json:"message"`
-	Question   string   `json:"question"`
-	Options    []string `json:"options"`
-	Conclusion string   `json:"conclusion"`
-	PdfURL     string   `json:"pdfUrl"`
+	ID         string         `json:"id"`
+	State      string         `json:"state"`
+	Stage      string         `json:"stage"`
+	Message    string         `json:"message"`
+	Question   string         `json:"question"`
+	Options    []string       `json:"options"`
+	Conclusion string         `json:"conclusion"`
+	Document   *ConclusionDoc `json:"document,omitempty"`
+	PdfURL     string         `json:"pdfUrl"`
 }
 
 func (s *SessionState) Public() PublicState {
@@ -69,6 +71,7 @@ func (s *SessionState) Public() PublicState {
 		Question:   s.Question,
 		Options:    options,
 		Conclusion: s.Conclusion,
+		Document:   s.Document,
 		PdfURL:     pdfURL,
 	}
 }
