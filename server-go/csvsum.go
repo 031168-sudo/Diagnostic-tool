@@ -12,15 +12,41 @@ import (
 const csvMaxRows = 300000
 
 type table struct {
-	header  []string
-	rows    [][]float64
-	timeIdx int
-	valid   []bool
+	header    []string
+	rows      [][]float64
+	timeIdx   int
+	timeScale float64
+	valid     []bool
 }
 
-func isTimeCol(name string) bool {
+func timeScaleFor(name string) (bool, float64) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "t", "time", "timestamp", "sec", "seconds", "время", "сек":
+	case "monotonic_ns":
+		return true, 1e-9
+	case "relative_ms", "relative_msec":
+		return true, 1e-3
+	case "t", "time", "timestamp", "sec", "seconds", "время", "сек", "relative_s":
+		return true, 1.0
+	}
+	return false, 0
+}
+
+func detectTime(header []string) (int, float64) {
+	preferred := []string{"relative_ms", "relative_msec", "t", "time", "timestamp", "sec", "seconds", "время", "сек", "relative_s", "monotonic_ns"}
+	for _, want := range preferred {
+		for i, h := range header {
+			if strings.ToLower(strings.TrimSpace(h)) == want {
+				_, scale := timeScaleFor(want)
+				return i, scale
+			}
+		}
+	}
+	return 0, 1.0
+}
+
+func skipColumn(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "monotonic_ns", "relative_ms", "relative_msec", "latitude", "longitude", "lat", "lon":
 		return true
 	}
 	return false
@@ -42,13 +68,7 @@ func parseTable(raw string) (*table, error) {
 	if len(data) > csvMaxRows {
 		data = data[:csvMaxRows]
 	}
-	timeIdx := 0
-	for i, h := range header {
-		if isTimeCol(h) {
-			timeIdx = i
-			break
-		}
-	}
+	timeIdx, timeScale := detectTime(header)
 	rows := make([][]float64, 0, len(data))
 	for _, rec := range data {
 		row := make([]float64, len(header))
@@ -73,6 +93,9 @@ func parseTable(raw string) (*table, error) {
 	}
 	valid := make([]bool, len(header))
 	for i := range header {
+		if skipColumn(header[i]) {
+			continue
+		}
 		cnt := 0
 		for _, row := range rows {
 			if !math.IsNaN(row[i]) {
@@ -81,12 +104,12 @@ func parseTable(raw string) (*table, error) {
 		}
 		valid[i] = cnt >= len(rows)*7/10
 	}
-	return &table{header: header, rows: rows, timeIdx: timeIdx, valid: valid}, nil
+	return &table{header: header, rows: rows, timeIdx: timeIdx, timeScale: timeScale, valid: valid}, nil
 }
 
 func (t *table) timeAt(i int) float64 {
 	if t.timeIdx >= 0 && t.timeIdx < len(t.rows[i]) && !math.IsNaN(t.rows[i][t.timeIdx]) {
-		return t.rows[i][t.timeIdx]
+		return t.rows[i][t.timeIdx] * t.timeScale
 	}
 	return float64(i)
 }
@@ -345,7 +368,7 @@ func (t *table) eventsText() string {
 func (t *table) summarize(name string, buckets int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s: %d числовых строк", name, len(t.rows))
-	if t.valid[t.timeIdx] {
+	if t.timeIdx >= 0 && t.timeIdx < len(t.header) {
 		fmt.Fprintf(&b, ", t=%.1f..%.1f сек", t.timeAt(0), t.timeAt(len(t.rows)-1))
 	}
 	b.WriteString("\nСтолбцы (min / max / среднее / p90):\n")

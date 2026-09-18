@@ -9,7 +9,7 @@ import (
 
 func TestSummarize(t *testing.T) {
 	var b strings.Builder
-	b.WriteString("t,rpm,speed,load,throttle,map,coolant,intake,voltage\n")
+	b.WriteString("relative_ms,monotonic_ns,rpm,speed_kmh,load_pct,throttle_pct,map_kpa,coolant_c,intake_c,voltage_v\n")
 	for i := 0; i < 5000; i++ {
 		tf := float64(i) / 10.0
 		speed, rpm := 0.0, 800.0
@@ -23,7 +23,7 @@ func TestSummarize(t *testing.T) {
 		load := 20 + speed*0.8
 		throttle := 5 + speed*0.5
 		mp := 35 + speed*0.9
-		fmt.Fprintf(&b, "%.1f,%.0f,%.1f,%.0f,%.1f,%.0f,85,22,14.2\n", tf, rpm, speed, load, throttle, mp)
+		fmt.Fprintf(&b, "%.0f,%.0f,%.0f,%.1f,%.0f,%.1f,%.0f,85,22,14.2\n", tf*1000, tf*1e9, rpm, speed, load, throttle, mp)
 	}
 	tbl, err := parseTable(b.String())
 	if err != nil {
