@@ -125,7 +125,6 @@ class AlfaMainActivity : ComponentActivity() {
                         statusText = statusText,
                         obdValuesText = obdValuesText,
                         errorCodes = errorCodes,
-                        errorRaw = errorRaw,
                         recording = recording,
                         recordStatusText = recordStatusText,
                         onChangeCar = { showCarsDialog() },
@@ -162,7 +161,7 @@ class AlfaMainActivity : ComponentActivity() {
                 )
 
                 obdDevices?.let { devices ->
-                    ObdDevicesDialog(devices = devices, onSelect = { d -> obd.connect(d.device); obdDevices = null }, onClose = { obdDevices = null; statusText = OBD_DISCONNECTED_TEXT })
+                    ObdDevicesDialog(devices = devices, onSelect = { d -> settingsPrefs.edit().putString("last_obd", d.address).apply(); obd.connect(d.device); obdDevices = null }, onClose = { obdDevices = null; statusText = OBD_DISCONNECTED_TEXT })
                 }
 
                 if (historyDialog) currentCar?.let { car ->
@@ -365,13 +364,13 @@ class AlfaMainActivity : ComponentActivity() {
     private fun requestObd() {
         val permissions = if (Build.VERSION.SDK_INT >= 31) arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT) else emptyArray()
         if (permissions.any { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }) requestPermissions(permissions, obdPermissionRequest)
-        else { configureObd(); obd.scan() }
+        else { configureObd(); obd.scan(settingsPrefs.getString("last_obd", null)) }
     }
 
     override fun onRequestPermissionsResult(request: Int, permissions: Array<String>, results: IntArray) {
         super.onRequestPermissionsResult(request, permissions, results)
         when (request) {
-            obdPermissionRequest -> if (results.all { it == PackageManager.PERMISSION_GRANTED }) { configureObd(); obd.scan() }
+            obdPermissionRequest -> if (results.all { it == PackageManager.PERMISSION_GRANTED }) { configureObd(); obd.scan(settingsPrefs.getString("last_obd", null)) }
             recordPermissionRequest -> if (results.all { it == PackageManager.PERMISSION_GRANTED }) startRecording()
         }
     }
@@ -458,7 +457,6 @@ private fun MainScreen(
     statusText: String,
     obdValuesText: String,
     errorCodes: List<String>,
-    errorRaw: String,
     recording: Boolean,
     recordStatusText: String,
     onChangeCar: () -> Unit,
@@ -500,7 +498,6 @@ private fun MainScreen(
             }
             Button(onClick = onToggleRecord, enabled = carEnabled, modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) { Text(if (recording) "ОСТАНОВИТЬ ЗАПИСЬ" else "НАЧАТЬ ЗАПИСЬ") }
             Text(recordStatusText, color = DiagLightGray, fontSize = 16.sp, modifier = Modifier.padding(top = 10.dp, bottom = 24.dp))
-            if (errorRaw.isNotBlank()) Text(errorRaw, color = DiagGray, fontSize = 9.sp, modifier = Modifier.padding(bottom = 24.dp))
         }
     }
 }

@@ -32,7 +32,25 @@ class TargetElm327Ble(
         fun label(): String = "${title()}\n$address"
     }
 
-    companion object { private val CLIENT_CONFIG_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb") }
+    companion object {
+        private val CLIENT_CONFIG_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+        private val OBD_NAME_HINTS = listOf("obd", "elm", "vlink", "v-link", "vgate", "icar", "konnwei", "veepeak", "bafx", "kw902", "autool", "scanner", "obdii")
+        private val OBD_SERVICE_UUIDS = setOf(
+            "0000ffe0-0000-1000-8000-00805f9b34fb",
+            "0000fff0-0000-1000-8000-00805f9b34fb",
+            "0000ff00-0000-1000-8000-00805f9b34fb",
+            "0000ffe5-0000-1000-8000-00805f9b34fb",
+            "0000fff1-0000-1000-8000-00805f9b34fb",
+            "000018f0-0000-1000-8000-00805f9b34fb"
+        )
+    }
+
+    private fun looksLikeObd(name: String, uuids: List<UUID>?): Boolean {
+        val n = name.lowercase(Locale.US)
+        if (OBD_NAME_HINTS.any { n.contains(it) }) return true
+        if (uuids != null && uuids.any { it.toString().lowercase(Locale.US) in OBD_SERVICE_UUIDS }) return true
+        return false
+    }
     private val adapter = activity.getSystemService(BluetoothManager::class.java).adapter
     private var gatt: BluetoothGatt? = null
     private var writeCharacteristic: BluetoothGattCharacteristic? = null
@@ -49,26 +67,35 @@ class TargetElm327Ble(
     private val mainHandler = Handler(Looper.getMainLooper())
 
     @SuppressLint("MissingPermission")
-    fun scan() {
+    fun scan(preferredAddress: String? = null) {
         close()
         if (!adapter.isEnabled) { listener.onState("Bluetooth выключен"); return }
         listener.onState("Поиск OBD-адаптеров рядом...")
         val scanner = adapter.bluetoothLeScanner
-        val devices = LinkedHashMap<String, DeviceInfo>()
+        val all = LinkedHashMap<String, DeviceInfo>()
+        val obd = LinkedHashMap<String, DeviceInfo>()
         val callback = object : android.bluetooth.le.ScanCallback() {
             override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
                 val device = result.device
                 val name = result.scanRecord?.deviceName ?: try { device.name ?: "" } catch (_: Exception) { "" }
-                devices[device.address] = DeviceInfo(device, name, device.address)
+                val info = DeviceInfo(device, name, device.address)
+                all[device.address] = info
+                val uuids = result.scanRecord?.serviceUuids?.map { it.uuid }
+                if (looksLikeObd(name, uuids) || device.address.equals(preferredAddress, true)) obd[device.address] = info
             }
             override fun onScanFailed(errorCode: Int) { listener.onState("Ошибка BLE scan: $errorCode") }
         }
         scanner.startScan(callback)
         mainHandler.postDelayed({
             scanner.stopScan(callback)
-            val list = devices.values.sortedWith(compareBy<DeviceInfo> { !it.title().contains("OBD", true) }.thenBy { it.title() })
+            val primary = if (obd.isNotEmpty()) obd.values.toList() else all.values.toList()
+            val list = primary.sortedWith(
+                compareBy<DeviceInfo> { !it.address.equals(preferredAddress, true) }
+                    .thenBy { !looksLikeObd(it.title(), null) }
+                    .thenBy { it.title() }
+            )
             if (list.isEmpty()) listener.onState("OBD-адаптеры не найдены") else listener.onDevices(list)
-        }, 5000)
+        }, 8000)
     }
 
     @SuppressLint("MissingPermission")
@@ -185,7 +212,7 @@ class TargetElm327Ble(
             if (idx < 0 || idx + marker.length > hex.length) break
             val rest = hex.substring(idx + marker.length)
             var consumed = 0
-            if (rest.length % 2 == 1) {
+            if ((rest.length / 2) % 2 == 1) {
                 val count = rest.substring(0, 2).toIntOrNull(16)
                 if (count != null && rest.length >= 2 + count * 4) {
                     var i = 2
