@@ -65,6 +65,7 @@ class TargetElm327Ble(
     private val values = ObdValues()
     @Volatile private var running = false
     private var commandIndex = 0
+    private var pendingDrain = false
     private var selectedDevice: BluetoothDevice? = null
     private val commands = listOf("010C", "010D", "0104", "0111", "010B", "0105", "010F", "0142")
     private var supportedCommands = DEFAULT_POLL
@@ -153,13 +154,13 @@ class TargetElm327Ble(
     @SuppressLint("MissingPermission")
     private fun startElmSession() {
         thread(name = "elm327-session") {
-            listener.onLog("Инициализация ELM327 (авто-протокол ATSP0)…")
-            for (command in listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP0")) sendAndWait(command, 3000)
+            listener.onLog("Инициализация ELM327…")
+            for (command in listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0")) sendAndWait(command, 5000)
             val id = clean(sendAndWait("ATI", 3000))
             if (id.isNotEmpty()) log("Адаптер: $id")
-            val proto = clean(sendAndWait("ATDPN", 3000))
-            log("Выбранный протокол (ATDPN): ${if (proto.isEmpty()) "не определён" else proto}")
-            supportedCommands = readSupportedPids()
+
+            supportedCommands = establishProtocolAndPids()
+
             readTroubleCodes()
             running = true; commandIndex = 0; values.speedPidPresent = false; values.speed = null
             listener.onState("ELM327 ${selectedDevice?.address ?: ""} готов; OBD опрашивается")
@@ -168,30 +169,61 @@ class TargetElm327Ble(
         }
     }
 
-    private fun readSupportedPids(): List<String> {
+    private fun establishProtocolAndPids(): List<String> {
+        log("Авто-выбор протокола (ATSP0)…")
+        sendAndWait("ATSP0", 5000)
+        var supported = readSupportedPids(15000)
+        if (supported.isNotEmpty()) {
+            log("Протокол выбран автоматически: ATDPN=${clean(sendAndWait("ATDPN", 3000))}")
+            return filterSupported(supported)
+        }
+        log("Авто-протокол не дал ответа — перебираю протоколы")
+        for (p in listOf("6", "7", "5", "3", "1", "2")) {
+            sendAndWait("ATSP$p", 3000)
+            supported = readSupportedPids(6000)
+            if (supported.isNotEmpty()) {
+                log("Связь установлена на протоколе SP$p (ATDPN=${clean(sendAndWait("ATDPN", 2000))})")
+                return filterSupported(supported)
+            }
+        }
+        log("ЭБУ не отвечает ни на одном протоколе — проверьте зажигание и адаптер")
+        return DEFAULT_POLL
+    }
+
+    private fun readSupportedPids(firstTimeoutMs: Long): Set<Int> {
         val supported = HashSet<Int>()
         var base = 0x00
         var guard = 0
         while (guard < 3) {
             guard++
-            val resp = sendAndWait("01%02X".format(Locale.US, base), 3000)
-            val hex = resp.uppercase(Locale.US).replace(Regex("[^0-9A-F]"), "")
-            val marker = "41" + "%02X".format(Locale.US, base)
-            val idx = hex.indexOf(marker)
-            if (idx < 0 || idx + marker.length + 8 > hex.length) {
-                log("Поддерживаемые PID: ответ на 01%02X не распознан".format(Locale.US, base))
-                break
-            }
-            val data = hex.substring(idx + marker.length, idx + marker.length + 8)
-            for (bit in 0 until 32) {
-                val b = data.substring(bit * 2, bit * 2 + 2).toIntOrNull(16) ?: 0
-                if ((b and (0x80 shr (bit % 8))) != 0) supported.add(base + 1 + bit)
-            }
-            if (!supported.contains(base + 32)) break
+            val timeout = if (guard == 1) firstTimeoutMs else 6000
+            val resp = sendAndWait("01%02X".format(Locale.US, base), timeout)
+            val set = parseSupportedBitmap(resp, base)
+            if (set.isEmpty()) { log("Ответ на 01%02X не распознан".format(Locale.US, base)); break }
+            supported.addAll(set)
+            if (!set.contains(base + 32)) break
             base += 0x20
         }
+        return supported
+    }
+
+    private fun parseSupportedBitmap(resp: String, base: Int): Set<Int> {
+        val hex = resp.uppercase(Locale.US).replace(Regex("[^0-9A-F]"), "")
+        val marker = "41" + "%02X".format(Locale.US, base)
+        val idx = hex.indexOf(marker)
+        if (idx < 0 || idx + marker.length + 8 > hex.length) return emptySet()
+        val data = hex.substring(idx + marker.length, idx + marker.length + 8)
+        val out = HashSet<Int>()
+        for (bit in 0 until 32) {
+            val b = data.substring(bit * 2, bit * 2 + 2).toIntOrNull(16) ?: 0
+            if ((b and (0x80 shr (bit % 8))) != 0) out.add(base + 1 + bit)
+        }
+        return out
+    }
+
+    private fun filterSupported(supported: Set<Int>): List<String> {
         val list = commands.filter { supported.contains(it.substring(2).toInt(16)) }
-        log("Поддерживаемые PID (${supported.size}): " + (list.joinToString(" ").ifEmpty { "нет" }))
+        log("Поддерживаемые PID (${supported.size}): " + list.joinToString(" ").ifEmpty { "нет нужных" })
         return if (list.isEmpty()) DEFAULT_POLL else list
     }
 
@@ -205,6 +237,13 @@ class TargetElm327Ble(
     private fun clean(s: String): String = s.replace("\r", " ").replace("\n", " ").replace(Regex("\\s+"), " ").trim().removeSuffix(">").trim()
 
     private fun sendAndWait(command: String, timeoutMs: Long): String {
+        if (pendingDrain) {
+            synchronized(responseLock) {
+                try { responseLock.wait(200) } catch (_: InterruptedException) {}
+                rxBuffer.clear(); responseText = StringBuilder(); promptReceived = false
+            }
+            pendingDrain = false
+        }
         val start = SystemClock.uptimeMillis()
         val response = synchronized(responseLock) {
             responseText = StringBuilder(); promptReceived = false; rxBuffer.clear(); send(command)
@@ -212,6 +251,7 @@ class TargetElm327Ble(
             while (!promptReceived && SystemClock.uptimeMillis() < deadline) try { responseLock.wait(100) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); break }
             responseText.toString()
         }
+        if (!promptReceived) pendingDrain = true
         val ms = SystemClock.uptimeMillis() - start
         val out = clean(response)
         listener.onLog("> $command  →  ${if (out.isEmpty()) "(нет ответа)" else out}  [$ms мс]")
