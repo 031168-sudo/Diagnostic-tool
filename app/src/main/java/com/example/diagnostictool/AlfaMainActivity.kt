@@ -1,6 +1,7 @@
 package com.example.diagnostictool
 
 import android.Manifest
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -137,7 +138,9 @@ class AlfaMainActivity : ComponentActivity() {
                         onConnect = { requestObd() },
                         onToggleRecord = { toggleRecording() },
                         obdLog = obdLog,
-                        onClearLog = { obdLog.clear() }
+                        onClearLog = { obdLog.clear() },
+                        onSaveLog = { saveLogToFile(false) },
+                        onShareLog = { saveLogToFile(true) }
                     )
 
                     carEditor?.let { state ->
@@ -226,6 +229,56 @@ class AlfaMainActivity : ComponentActivity() {
     private fun appendLog(line: String) {
         obdLog.add("[${logTimeFormat.format(Date())}] $line")
         while (obdLog.size > 400) obdLog.removeAt(0)
+    }
+
+    private fun buildLogText(): String {
+        val sb = StringBuilder()
+        sb.append("Alfa Diagnostic — журнал OBD\n")
+        sb.append("Время: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())}\n")
+        sb.append("Устройство: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE}\n")
+        sb.append("Автомобиль: ${currentCar?.title() ?: "—"}\n")
+        sb.append("Последний адаптер: ${settingsPrefs.getString("last_obd", "—")}\n")
+        sb.append("Статус: $statusText\n")
+        sb.append("Коды: ${errorCodes.ifEmpty { listOf("—") }.joinToString(" ")}\n")
+        sb.append("----------------------------------------\n")
+        sb.append(obdLog.joinToString("\n"))
+        sb.append("\n")
+        return sb.toString()
+    }
+
+    private fun saveLogToFile(share: Boolean) {
+        val text = buildLogText()
+        val name = "obd_log_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".txt"
+        val saved = runCatching {
+            if (Build.VERSION.SDK_INT >= 29) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, name)
+                    put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+                    put(MediaStore.Downloads.RELATIVE_PATH, "Download/DiagnosticTool/logs")
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("нет доступа к Downloads")
+                contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+                contentResolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+                uri
+            } else {
+                val dir = getExternalFilesDir(null) ?: filesDir
+                val f = java.io.File(dir, name)
+                f.writeText(text)
+                Uri.fromFile(f)
+            }
+        }.getOrNull()
+
+        if (saved == null) { Toast.makeText(this, "Не удалось сохранить журнал", Toast.LENGTH_LONG).show(); return }
+        if (share && Build.VERSION.SDK_INT >= 29) {
+            startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_STREAM, saved)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }, "Отправить журнал"))
+        } else {
+            Toast.makeText(this, "Журнал сохранён: Download/DiagnosticTool/logs/$name", Toast.LENGTH_LONG).show()
+        }
     }
 
     fun hasLocationPermission(): Boolean = if (Build.VERSION.SDK_INT < 23) true else
@@ -478,7 +531,9 @@ private fun MainScreen(
     onConnect: () -> Unit,
     onToggleRecord: () -> Unit,
     obdLog: List<String>,
-    onClearLog: () -> Unit
+    onClearLog: () -> Unit,
+    onSaveLog: () -> Unit,
+    onShareLog: () -> Unit
 ) {
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         Column(
@@ -515,8 +570,10 @@ private fun MainScreen(
             Text(recordStatusText, color = DiagLightGray, fontSize = 16.sp, modifier = Modifier.padding(top = 10.dp, bottom = 16.dp))
 
             HorizontalDivider(color = DiagGray)
-            Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Журнал OBD", color = MaterialTheme.colorScheme.onBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            Text("Журнал OBD", color = MaterialTheme.colorScheme.onBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onSaveLog) { Text("Сохранить в файл") }
+                TextButton(onClick = onShareLog) { Text("Отправить") }
                 TextButton(onClick = onClearLog) { Text("Очистить") }
             }
             val logScroll = rememberScrollState()
