@@ -48,6 +48,11 @@ class ConclusionPdfRenderer(private val pageWidth: Int = 595, private val pageHe
         typeface = Typeface.create("sans-serif", Typeface.NORMAL)
         color = Color.rgb(30, 30, 30)
     }
+    private val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 11.5f
+        typeface = Typeface.create("sans-serif", Typeface.BOLD)
+        color = Color.rgb(40, 40, 40)
+    }
     private val gridPaint = Paint().apply {
         color = gridColor
         strokeWidth = 0.8f
@@ -65,6 +70,16 @@ class ConclusionPdfRenderer(private val pageWidth: Int = 595, private val pageHe
         y += 6f
         if (subtitle.isNotBlank()) {
             centered(subtitle, subtitlePaint)
+            y += 4f
+        }
+        val dateTime = root.optString("dateTime")
+        val duration = root.optString("duration")
+        val meta = listOfNotNull(
+            dateTime.takeIf { it.isNotBlank() },
+            duration.takeIf { it.isNotBlank() }?.let { "длительность $it" }
+        ).joinToString(" · ")
+        if (meta.isNotBlank()) {
+            centered(meta, subtitlePaint)
             y += 4f
         }
         y += 10f
@@ -101,6 +116,24 @@ class ConclusionPdfRenderer(private val pageWidth: Int = 595, private val pageHe
         if (results.isNotEmpty()) {
             numbered("Результаты анализа")
             bullets(results)
+        }
+
+        val errors = errorItems(root.optJSONArray("errors"))
+        val errorsNote = root.optString("errorsNote")
+        if (errors.isNotEmpty() || errorsNote.isNotBlank()) {
+            numbered("Ошибки")
+            if (errorsNote.isNotBlank()) paragraph(errorsNote, bodyPaint, bodyLine)
+            errors.forEach { e ->
+                val title = when {
+                    e.code.isNotBlank() && e.meaning.isNotBlank() -> "${e.code} — ${e.meaning}"
+                    e.code.isNotBlank() -> e.code
+                    else -> e.meaning
+                }
+                subheading(title)
+                if (e.cause.isNotBlank()) paragraph("Возможная причина: ${e.cause}", bodyPaint, bodyLine)
+                if (e.remedy.isNotBlank()) paragraph("Как устранить: ${e.remedy}", bodyPaint, bodyLine)
+                y += 2f
+            }
         }
 
         val conclusion = root.optString("conclusion")
@@ -149,6 +182,18 @@ class ConclusionPdfRenderer(private val pageWidth: Int = 595, private val pageHe
         val baseline = y - headingPaint.fontMetrics.ascent
         canvas?.drawText(title, margin, baseline, headingPaint)
         y += h + 7f
+    }
+
+    private fun subheading(text: String) {
+        val h = lineHeight(subPaint)
+        ensure(h + 8f)
+        y += 6f
+        for (line in wrap(text, subPaint, contentWidth)) {
+            ensure(h)
+            canvas?.drawText(line, margin, y - subPaint.fontMetrics.ascent, subPaint)
+            y += h
+        }
+        y += 2f
     }
 
     private fun centered(text: String, paint: Paint) {
@@ -270,6 +315,21 @@ class ConclusionPdfRenderer(private val pageWidth: Int = 595, private val pageHe
             val label = o.optString("label")
             val value = o.optString("value")
             if (label.isNotBlank() || value.isNotBlank()) out.add(label to value)
+        }
+        return out
+    }
+
+    private data class ErrItem(val code: String, val meaning: String, val cause: String, val remedy: String)
+
+    private fun errorItems(a: JSONArray?): List<ErrItem> {
+        if (a == null) return emptyList()
+        val out = ArrayList<ErrItem>()
+        for (i in 0 until a.length()) {
+            val o = a.optJSONObject(i) ?: continue
+            val code = o.optString("code")
+            val meaning = o.optString("meaning")
+            if (code.isBlank() && meaning.isBlank()) continue
+            out.add(ErrItem(code, meaning, o.optString("cause"), o.optString("remedy")))
         }
         return out
     }

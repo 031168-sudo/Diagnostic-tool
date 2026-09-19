@@ -13,7 +13,8 @@ class DiagnosticRecordStore(context: Context) {
         val createdAt: Long,
         val aiSent: Boolean,
         val aiResponseUri: String?,
-        val diagnosticId: String?
+        val diagnosticId: String?,
+        val sessionUri: String?
     )
 
     private val prefs = context.getSharedPreferences("diagnostic_records", Context.MODE_PRIVATE)
@@ -33,6 +34,17 @@ class DiagnosticRecordStore(context: Context) {
 
     fun markAiSent(sessionName: String, diagnosticId: String) { update(sessionName) { it.put("aiSent", true); it.put("diagnosticId", diagnosticId) } }
     fun setAiResponse(sessionName: String, uri: String) { update(sessionName) { it.put("aiSent", true); it.put("aiResponseUri", uri) } }
+    fun setSessionUri(sessionName: String, uri: String) { update(sessionName) { it.put("sessionUri", uri) } }
+
+    fun delete(sessionName: String) {
+        val a = JSONArray(prefs.getString("items", "[]"))
+        val out = JSONArray()
+        for (i in 0 until a.length()) {
+            val x = a.getJSONObject(i)
+            if (x.optString("sessionName") != sessionName) out.put(x)
+        }
+        prefs.edit().putString("items", out.toString()).apply()
+    }
 
     private fun update(sessionName: String, change: (JSONObject) -> Unit) {
         val a = JSONArray(prefs.getString("items", "[]"))
@@ -47,7 +59,7 @@ class DiagnosticRecordStore(context: Context) {
         val a = JSONArray(prefs.getString("items", "[]"))
         return (0 until a.length()).map { o ->
             val x = a.getJSONObject(o)
-            Record(x.optString("id"), x.optString("carId"), x.optString("sessionName"), x.optString("complaint"), x.optLong("createdAt"), x.optBoolean("aiSent", false), x.optString("aiResponseUri").ifBlank { null }, x.optString("diagnosticId").ifBlank { null })
+            Record(x.optString("id"), x.optString("carId"), x.optString("sessionName"), x.optString("complaint"), x.optLong("createdAt"), x.optBoolean("aiSent", false), x.optString("aiResponseUri").ifBlank { null }, x.optString("diagnosticId").ifBlank { null }, x.optString("sessionUri").ifBlank { null })
         }.filter { it.carId == carId }.reversed()
     }
 }

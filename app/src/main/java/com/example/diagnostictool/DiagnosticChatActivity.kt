@@ -60,7 +60,7 @@ class DiagnosticChatActivity : ComponentActivity() {
                     stageText = stageText, conversationText = conversationText, questionText = questionText,
                     answerHint = answerHint, answerText = answerText, answerEnabled = answerEnabled,
                     sendEnabled = sendEnabled, pdfEnabled = pdfEnabled,
-                    onAnswerChange = { answerText = it }, onSend = { submitAnswer() }, onSavePdf = { savePdf(lastDocument, lastConclusion) }
+                    onAnswerChange = { answerText = it }, onSend = { submitAnswer() }, onSavePdf = { savePdf(lastDocument, lastConclusion) }, onBack = { finish() }
                 )
             }
         }
@@ -143,13 +143,13 @@ class DiagnosticChatActivity : ComponentActivity() {
                 if (root.optString("title").isNotBlank() || root.has("carRows") || root.optString("complaint").isNotBlank()) renderer.render(root)
                 else renderer.renderPlainText(fallbackText)
             } else renderer.renderPlainText(fallbackText)
-            val values = ContentValues().apply { put(MediaStore.Downloads.DISPLAY_NAME, "Заключение_$sessionName.pdf"); put(MediaStore.Downloads.MIME_TYPE, "application/pdf"); put(MediaStore.Downloads.RELATIVE_PATH, "Download/DiagnosticTool/conclusions"); put(MediaStore.Downloads.IS_PENDING, 1) }
+            val values = ContentValues().apply { put(MediaStore.Downloads.DISPLAY_NAME, "Заключение_$sessionName.pdf"); put(MediaStore.Downloads.MIME_TYPE, "application/pdf"); put(MediaStore.Downloads.RELATIVE_PATH, "Download/Alfa Diagnostic/conclusions"); put(MediaStore.Downloads.IS_PENDING, 1) }
             val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("Не удалось создать PDF")
             contentResolver.openOutputStream(uri)?.use { doc.writeTo(it) } ?: error("Не удалось записать PDF")
             doc.close()
             contentResolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
             DiagnosticRecordStore(this).setAiResponse(sessionName, uri.toString())
-            Toast.makeText(this, "PDF сохранён в Downloads/DiagnosticTool/conclusions", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "PDF сохранён в Download/Alfa Diagnostic/conclusions", Toast.LENGTH_LONG).show()
             pdfEnabled = false
         } catch (e: Exception) { Toast.makeText(this, "Ошибка PDF: ${e.message}", Toast.LENGTH_LONG).show() }
     }
@@ -159,7 +159,7 @@ class DiagnosticChatActivity : ComponentActivity() {
 private fun ChatScreen(
     stageText: String, conversationText: String, questionText: String, answerHint: String,
     answerText: String, answerEnabled: Boolean, sendEnabled: Boolean, pdfEnabled: Boolean,
-    onAnswerChange: (String) -> Unit, onSend: () -> Unit, onSavePdf: () -> Unit
+    onAnswerChange: (String) -> Unit, onSend: () -> Unit, onSavePdf: () -> Unit, onBack: () -> Unit
 ) {
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         Column(Modifier.padding(padding).fillMaxSize().padding(horizontal = 24.dp, vertical = 24.dp)) {
@@ -170,6 +170,7 @@ private fun ChatScreen(
             OutlinedTextField(value = answerText, onValueChange = onAnswerChange, enabled = answerEnabled, label = { Text(answerHint) }, minLines = 2, modifier = Modifier.fillMaxWidth())
             Button(onClick = onSend, enabled = sendEnabled, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("ОТПРАВИТЬ ОТВЕТ") }
             Button(onClick = onSavePdf, enabled = pdfEnabled, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("СОХРАНИТЬ ЗАКЛЮЧЕНИЕ PDF") }
+            Button(onClick = onBack, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("НАЗАД") }
         }
     }
 }

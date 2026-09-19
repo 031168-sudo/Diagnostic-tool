@@ -13,10 +13,14 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.provider.MediaStore
+import java.io.BufferedOutputStream
 import java.io.BufferedWriter
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.OutputStream
 import java.nio.ByteBuffer
@@ -25,12 +29,22 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.zip.GZIPOutputStream
 import kotlin.concurrent.thread
 
-class PublicSessionRecorder(private val activity: AlfaMainActivity, private val car: Car, private val status: (String) -> Unit) : SensorEventListener, LocationListener {
+class PublicSessionRecorder(
+    private val activity: AlfaMainActivity,
+    val car: Car,
+    private val status: (String) -> Unit,
+    private val onLimitReached: (PublicSessionRecorder) -> Unit = {}
+) : SensorEventListener, LocationListener {
     private val running = AtomicBoolean(false)
+    private val handler = Handler(Looper.getMainLooper())
+    private val maxDurationMs = 5 * 60 * 1000L
+    private val limitRunnable = Runnable { if (running.get()) onLimitReached(this) }
     private var audio: AudioRecord? = null
     private var audioThread: Thread? = null
+    private var privateDir: File? = null
     private var pcmFile: File? = null
     private var obdWriter: BufferedWriter? = null
     private var sensorsWriter: BufferedWriter? = null
@@ -43,11 +57,7 @@ class PublicSessionRecorder(private val activity: AlfaMainActivity, private val 
     private val locationManager = activity.getSystemService(LocationManager::class.java)
     private val accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
     private val gyroscope = sensorManager?.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
-    private var obdUri: android.net.Uri? = null
-    private var sensorsUri: android.net.Uri? = null
-    private var gpsUri: android.net.Uri? = null
-    private var metaUri: android.net.Uri? = null
-    private var audioUri: android.net.Uri? = null
+    private var packUri: android.net.Uri? = null
     @Volatile private var lastGpsSpeedKmh: Double? = null
     @Volatile private var obdActive = false
 
@@ -57,19 +67,17 @@ class PublicSessionRecorder(private val activity: AlfaMainActivity, private val 
         if (minBuffer <= 0) { status("Микрофон недоступен"); return }
         sessionName = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         sessionStartNs = SystemClock.elapsedRealtimeNanos()
-        val privateDir = File(activity.cacheDir, "sessions/$sessionName").apply { mkdirs() }
-        pcmFile = File(privateDir, "audio.pcm")
+        val dir = File(activity.cacheDir, "sessions/$sessionName").apply { mkdirs() }
+        privateDir = dir
+        pcmFile = File(dir, "audio.pcm")
         try {
-            obdUri = createPublicFile("obd.csv", "text/csv")
-            obdWriter = writerFor(obdUri!!)
+            obdWriter = File(dir, "obd.csv").bufferedWriter()
             obdWriter!!.write("relative_ms,monotonic_ns,rpm,speed_kmh,load_pct,throttle_pct,map_kpa,coolant_c,intake_c,voltage_v\n")
             obdWriter!!.flush()
-            sensorsUri = createPublicFile("sensors.csv", "text/csv")
-            sensorsWriter = writerFor(sensorsUri!!)
+            sensorsWriter = File(dir, "sensors.csv").bufferedWriter()
             sensorsWriter!!.write("relative_ms,monotonic_ns,type,x,y,z\n")
             sensorsWriter!!.flush()
-            gpsUri = createPublicFile("gps.csv", "text/csv")
-            gpsWriter = writerFor(gpsUri!!)
+            gpsWriter = File(dir, "gps.csv").bufferedWriter()
             gpsWriter!!.write("relative_ms,monotonic_ns,speed_kmh,latitude,longitude,accuracy_m\n")
             gpsWriter!!.flush()
         } catch (e: Exception) { status("Ошибка создания файлов: ${e.message}"); return }
@@ -85,6 +93,7 @@ class PublicSessionRecorder(private val activity: AlfaMainActivity, private val 
         }
         audioStartNs = SystemClock.elapsedRealtimeNanos()
         running.set(true)
+        handler.postDelayed(limitRunnable, maxDurationMs)
         writeMeta(sampleRate)
         status("Запись: $sessionName\n${car.title()}\nOBD: ${if (obdActive) "подключён" else "нет — скорость GPS"}")
         audioThread = thread(name = "audio-recorder") {
@@ -133,20 +142,19 @@ class PublicSessionRecorder(private val activity: AlfaMainActivity, private val 
 
     fun stop() {
         if (!running.getAndSet(false)) return
+        handler.removeCallbacks(limitRunnable)
         sensorManager?.unregisterListener(this); stopLocation()
         try { audioThread?.join(2000) } catch (_: Exception) {}
         try { audio?.stop() } catch (_: Exception) {}
         audio?.release(); audio = null
         synchronized(this) { obdWriter?.close(); obdWriter = null; sensorsWriter?.close(); sensorsWriter = null; gpsWriter?.close(); gpsWriter = null }
-        try { obdUri?.let { publish(it) } } catch (_: Exception) {}
-        try { sensorsUri?.let { publish(it) } } catch (_: Exception) {}
-        try { gpsUri?.let { publish(it) } } catch (_: Exception) {}
-        try { writeWavToPublic(pcmFile!!, 48_000, 1, 16) } catch (e: Exception) { status("Ошибка WAV: ${e.message}") }
-        try { writeMetaFile() } catch (e: Exception) { status("Ошибка session.json: ${e.message}") }
-        pcmFile?.delete(); status("Запись сохранена")
+        try { writeWavToPrivate(pcmFile!!, 48_000, 1, 16) } catch (e: Exception) { status("Ошибка WAV: ${e.message}") }
+        try { packSession() } catch (e: Exception) { status("Ошибка упаковки: ${e.message}") }
+        privateDir?.deleteRecursively()
+        status("Запись сохранена")
     }
 
-    fun sessionUris(): List<android.net.Uri> = listOfNotNull(audioUri, obdUri, gpsUri, sensorsUri, metaUri)
+    fun sessionUris(): List<android.net.Uri> = listOfNotNull(packUri)
     private fun stopLocation() { try { locationManager?.removeUpdates(this) } catch (_: Exception) {} }
     private fun writeMeta(sampleRate: Int) { File(pcmFile!!.parentFile, "session.json").writeText(metaJson(sampleRate)) }
     private fun metaJson(sampleRate: Int): String = """{
@@ -162,18 +170,79 @@ class PublicSessionRecorder(private val activity: AlfaMainActivity, private val 
   "speed_source": "${if (obdActive) "OBD_with_GPS_fallback" else "GPS"}",
   "car_id": "${escape(car.id)}",
   "car": ${car.toJson()},
-  "storage": "Downloads/DiagnosticTool/sessions/$sessionName"
+  "storage": "Download/Alfa Diagnostic/sessions/$sessionName.adp"
 }
 """
     private fun escape(s: String) = s.replace("\\", "\\\\").replace("\"", "\\\"")
-    private fun writeMetaFile() { val meta = File(pcmFile!!.parentFile, "session.json"); metaUri = createPublicFile("session.json", "application/json"); activity.contentResolver.openOutputStream(metaUri!!)?.use { it.write(meta.readBytes()) }; publish(metaUri!!) }
-    private fun writeWavToPublic(raw: File, rate: Int, channels: Int, bits: Int) { audioUri = createPublicFile("audio.wav", "audio/wav"); activity.contentResolver.openOutputStream(audioUri!!)?.use { out -> writeWavHeader(out, rate, channels, bits, raw.length()); raw.inputStream().use { it.copyTo(out, 64 * 1024) } }; publish(audioUri!!) }
+
+    private fun writeWavToPrivate(raw: File, rate: Int, channels: Int, bits: Int) {
+        val wav = File(raw.parentFile, "audio.wav")
+        FileOutputStream(wav).use { out ->
+            writeWavHeader(out, rate, channels, bits, raw.length())
+            raw.inputStream().use { it.copyTo(out, 64 * 1024) }
+        }
+    }
+
+    private fun packSession() {
+        val dir = privateDir ?: return
+        val rawErrors = activity.currentErrorRaw()
+        val errorLines = activity.currentErrorCodes().joinToString("\n")
+        File(dir, "errors.txt").writeText(listOf(rawErrors, errorLines).filter { it.isNotBlank() }.joinToString("\n"))
+        val entries = listOf("session.json", "obd.csv", "gps.csv", "sensors.csv", "audio.wav", "errors.txt")
+            .map { File(dir, it) }
+            .filter { it.exists() && (it.length() > 0 || it.name == "errors.txt") }
+        if (entries.isEmpty()) return
+        val uri = createPublicFile("$sessionName.adp", "application/octet-stream")
+        val out = BufferedOutputStream(activity.contentResolver.openOutputStream(uri) ?: error("Не удалось создать контейнер"))
+        try {
+            out.write(byteArrayOf('A'.code.toByte(), 'D'.code.toByte(), 'P'.code.toByte(), 'K'.code.toByte()))
+            out.write(1); out.write(0); out.write(0); out.write(0)
+            for (file in entries) {
+                val nameBytes = file.name.toByteArray(Charsets.UTF_8)
+                writeU16(out, nameBytes.size)
+                out.write(nameBytes)
+                val gz = File(dir, file.name + ".gz")
+                gzipTo(file, gz)
+                writeU64(out, gz.length())
+                FileInputStream(gz).use { it.copyTo(out, 64 * 1024) }
+                gz.delete()
+            }
+            out.flush()
+        } finally { out.close() }
+        publish(uri)
+        packUri = uri
+    }
+
+    private fun gzipTo(src: File, dst: File) {
+        GZIPOutputStream(BufferedOutputStream(FileOutputStream(dst)), 64 * 1024).use { gz ->
+            FileInputStream(src).use { it.copyTo(gz, 64 * 1024) }
+        }
+    }
+
+    private fun writeU16(out: OutputStream, value: Int) {
+        out.write((value ushr 8) and 0xFF); out.write(value and 0xFF)
+    }
+
+    private fun writeU64(out: OutputStream, value: Long) {
+        for (shift in 56 downTo 0 step 8) out.write(((value ushr shift) and 0xFF).toInt())
+    }
+
     private fun writeWavHeader(out: OutputStream, rate: Int, channels: Int, bits: Int, dataSize: Long) { val h = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN); h.put("RIFF".toByteArray()); h.putInt((36 + dataSize).toInt()); h.put("WAVE".toByteArray()); h.put("fmt ".toByteArray()); h.putInt(16); h.putShort(1); h.putShort(channels.toShort()); h.putInt(rate); h.putInt(rate * channels * bits / 8); h.putShort((channels * bits / 8).toShort()); h.putShort(bits.toShort()); h.put("data".toByteArray()); h.putInt(dataSize.toInt()); out.write(h.array()) }
-    private fun writerFor(uri: android.net.Uri): BufferedWriter = (activity.contentResolver.openOutputStream(uri) ?: error("Не удалось открыть $uri")).bufferedWriter()
+
     private fun createPublicFile(name: String, mime: String): android.net.Uri {
-        if (Build.VERSION.SDK_INT < 29) { val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "DiagnosticTool/sessions/$sessionName"); dir.mkdirs(); return android.net.Uri.fromFile(File(dir, name)) }
-        val v = ContentValues().apply { put(MediaStore.Downloads.DISPLAY_NAME, name); put(MediaStore.Downloads.MIME_TYPE, mime); put(MediaStore.Downloads.RELATIVE_PATH, "Download/DiagnosticTool/sessions/$sessionName"); put(MediaStore.Downloads.IS_PENDING, 1) }
+        if (Build.VERSION.SDK_INT < 29) {
+            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Alfa Diagnostic/sessions")
+            dir.mkdirs()
+            return android.net.Uri.fromFile(File(dir, name))
+        }
+        val v = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, name)
+            put(MediaStore.Downloads.MIME_TYPE, mime)
+            put(MediaStore.Downloads.RELATIVE_PATH, "Download/Alfa Diagnostic/sessions")
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
         return activity.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v) ?: error("Не удалось создать $name")
     }
+
     private fun publish(uri: android.net.Uri) { if (Build.VERSION.SDK_INT >= 29) activity.contentResolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null) }
 }

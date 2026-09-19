@@ -217,6 +217,16 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
 			}
+			if isPackFile(name) {
+				unpacked, uerr := unpackArchive(dst, dir)
+				if uerr != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Не удалось распаковать контейнер сессии: " + uerr.Error()})
+					return
+				}
+				_ = os.Remove(dst)
+				files = append(files, unpacked...)
+				continue
+			}
 			files = append(files, FileInfo{Name: name, Path: dst, Size: size})
 		}
 	}

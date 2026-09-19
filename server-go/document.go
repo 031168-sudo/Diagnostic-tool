@@ -3,10 +3,13 @@ package main
 import (
 	"encoding/csv"
 	"encoding/json"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type DocRow struct {
@@ -14,27 +17,40 @@ type DocRow struct {
 	Value string `json:"value"`
 }
 
+type ErrorItem struct {
+	Code    string `json:"code"`
+	Meaning string `json:"meaning"`
+	Cause   string `json:"cause"`
+	Remedy  string `json:"remedy"`
+}
+
 type ConclusionDoc struct {
 	Title       string   `json:"title"`
 	Subtitle    string   `json:"subtitle"`
+	DateTime    string   `json:"dateTime"`
+	Duration    string   `json:"duration"`
 	Complaint   string   `json:"complaint"`
 	CarRows     []DocRow `json:"carRows"`
 	DataIntro   string   `json:"dataIntro"`
 	FileRows    []DocRow `json:"fileRows"`
-	DataRanges  string   `json:"dataRanges"`
-	Analysis    string   `json:"analysis"`
-	Results     []string `json:"results"`
-	Conclusion  string   `json:"conclusion"`
+	DataRanges  string      `json:"dataRanges"`
+	Analysis    string      `json:"analysis"`
+	Results     []string    `json:"results"`
+	Errors      []ErrorItem `json:"errors"`
+	ErrorsNote  string      `json:"errorsNote"`
+	Conclusion  string      `json:"conclusion"`
 	Priority    string   `json:"priority"`
 	Recommended string   `json:"recommended"`
 	Limitation  string   `json:"limitation"`
 }
 
 type docPart struct {
-	Complaint   string   `json:"complaint"`
-	Analysis    string   `json:"analysis"`
-	Results     []string `json:"results"`
-	Conclusion  string   `json:"conclusion"`
+	Complaint   string      `json:"complaint"`
+	Analysis    string      `json:"analysis"`
+	Results     []string    `json:"results"`
+	Errors      []ErrorItem `json:"errors"`
+	ErrorsNote  string      `json:"errorsNote"`
+	Conclusion  string      `json:"conclusion"`
 	Priority    string   `json:"priority"`
 	Recommended string   `json:"recommended"`
 	Limitation  string   `json:"limitation"`
@@ -61,7 +77,9 @@ func buildConclusionDoc(st *SessionState, metrics WavMetrics, part docPart) *Con
 	hasOBD := fileExists(filepath.Join(dir, "obd.csv"))
 	doc := &ConclusionDoc{
 		Title:       "ДИАГНОСТИЧЕСКОЕ ЗАКЛЮЧЕНИЕ",
-		Subtitle:    "Анализ акустической жалобы и синхронной записи параметров автомобиля",
+		Subtitle:    "Анализ акустической записи параметров автомобиля",
+		DateTime:    formatSessionDateTime(st),
+		Duration:    formatSessionDuration(metrics.DurationSec),
 		Complaint:   strings.TrimSpace(part.Complaint),
 		CarRows:     carRows(st.Car, hasOBD),
 		DataIntro:   dataIntro(dir),
@@ -69,6 +87,8 @@ func buildConclusionDoc(st *SessionState, metrics WavMetrics, part docPart) *Con
 		DataRanges:  obdRanges(filepath.Join(dir, "obd.csv")),
 		Analysis:    strings.TrimSpace(part.Analysis),
 		Results:     cleanList(part.Results),
+		Errors:      cleanErrors(part.Errors),
+		ErrorsNote:  strings.TrimSpace(part.ErrorsNote),
 		Conclusion:  strings.TrimSpace(part.Conclusion),
 		Priority:    strings.TrimSpace(part.Priority),
 		Recommended: strings.TrimSpace(part.Recommended),
@@ -81,6 +101,30 @@ func buildConclusionDoc(st *SessionState, metrics WavMetrics, part docPart) *Con
 		doc.Limitation = "Данное заключение основано на анализе предоставленной цифровой записи и описании проявления неисправности. Оно определяет наиболее согласующуюся группу причин, но не заменяет физическую проверку автомобиля и не устанавливает конкретную неисправную деталь без осмотра."
 	}
 	return doc
+}
+
+func formatSessionDateTime(st *SessionState) string {
+	if t, err := time.Parse("20060102_150405", st.SessionName); err == nil {
+		return t.Format("02.01.2006 15:04:05")
+	}
+	if t, err := time.Parse("2006-01-02T15:04:05.000Z", st.CreatedAt); err == nil {
+		return t.Format("02.01.2006 15:04:05")
+	}
+	return ""
+}
+
+func formatSessionDuration(seconds float64) string {
+	if seconds <= 0 {
+		return ""
+	}
+	total := int(math.Round(seconds))
+	h := total / 3600
+	m := (total % 3600) / 60
+	s := total % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%d:%02d", m, s)
 }
 
 func carRows(carJSON string, hasOBD bool) []DocRow {
@@ -269,6 +313,20 @@ func fileExists(path string) bool {
 	}
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+func cleanErrors(items []ErrorItem) []ErrorItem {
+	out := []ErrorItem{}
+	for _, it := range items {
+		it.Code = strings.TrimSpace(it.Code)
+		it.Meaning = strings.TrimSpace(it.Meaning)
+		it.Cause = strings.TrimSpace(it.Cause)
+		it.Remedy = strings.TrimSpace(it.Remedy)
+		if it.Code != "" || it.Meaning != "" {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 func cleanList(items []string) []string {

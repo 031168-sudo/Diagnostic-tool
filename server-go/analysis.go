@@ -16,17 +16,20 @@ import (
 const systemPrompt = `Ты — автомобильный диагност приложения Diagnostic Tool. Анализируй только предоставленные данные и явно отделяй факт от гипотезы. Сопоставляй audio, OBD, GPS и датчики по общей временной шкале. Не утверждай неисправность конкретной детали, если данные её не доказывают. Если для различения причин нужен простой дополнительный тест или вопрос владельцу — задай его.
 
 Отвечай СТРОГО одним JSON-объектом без markdown:
-{"state":"question|completed","stage":"...","message":"...","question":"...","options":["..."],"conclusion":"...","document":{"complaint":"...","analysis":"...","results":["..."],"conclusion":"...","priority":"...","recommended":"...","limitation":"..."}}
+{"state":"question|completed","stage":"...","message":"...","question":"...","options":["..."],"conclusion":"...","document":{"complaint":"...","analysis":"...","results":["..."],"errors":[{"code":"...","meaning":"...","cause":"...","remedy":"..."}],"errorsNote":"...","conclusion":"...","priority":"...","recommended":"...","limitation":"..."}}
 Для question поля conclusion и document пустые/отсутствуют. Для completed question пустое.
 
 При завершении заключение должно быть техническим и структурированным. Заполняй поля document:
 - complaint — жалоба владельца, кратко и по существу (2–4 предложения);
 - analysis — что и как анализировалось: какие данные сопоставлялись и по какой шкале;
 - results — массив строк, конкретные наблюдения по данным (корреляции, временные закономерности, что исключено);
+- errors — разбор каждого считанного кода неисправности (DTC): code — код, meaning — что означает, cause — возможные причины, remedy — как устранить и что проверить;
+- errorsNote — связаны ли выявленные коды с акустической жалобой. Если связаны — объясни, как именно; если не связаны — прямо напиши, что выявленные ошибки не связаны с посторонними звуками. Если кодов нет — напиши, что коды неисправностей не обнаружены;
 - conclusion — диагностическое заключение: наиболее согласующаяся группа причин;
 - priority — что проверить в первую очередь (нумерованный список в одну строку);
 - recommended — как и где проводить проверку автомобиля;
 - limitation — ограничения анализа.
+Если считанные коды связаны с посторонними звуками, обязательно учти их в анализе и заключении.
 Поле conclusion продублируй связным текстом всего заключения для чата.`
 
 const followUpPrompt = `Ты продолжаешь диалог по автомобильной диагностике. Отвечай по имеющимся данным, не придумывай измерения и чётко отделяй факт от предположения.`
@@ -70,6 +73,17 @@ func readTextIfExists(path string, max int) string {
 		}
 	}
 	return string(b)
+}
+
+func stripHashLines(s string) string {
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
 func summarizeTable(name string, t *table, err error) string {
@@ -190,6 +204,7 @@ func (s *Server) runAnalysis(id, extra string) {
 	obdRaw := readTextIfExists(filepath.Join(dir, "obd.csv"), 64<<20)
 	gpsRaw := readTextIfExists(filepath.Join(dir, "gps.csv"), 16<<20)
 	sensorsRaw := readTextIfExists(filepath.Join(dir, "sensors.csv"), 64<<20)
+	errorsText := stripHashLines(readTextIfExists(filepath.Join(dir, "errors.txt"), 100_000))
 
 	obdTable, obdErr := parseTable(obdRaw)
 	gpsTable, gpsErr := parseTable(gpsRaw)
@@ -271,8 +286,13 @@ func (s *Server) runAnalysis(id, extra string) {
 Сводка по датчикам (акселерометр/гироскоп):
 %s
 
+Считанные коды неисправностей (DTC):
+%s
+
 Дополнительный ответ владельца:
 %s
+
+Примечание: сессия передана фирменным упакованным контейнером и распакована сервером; работай с распакованными данными.
 
 Проведи диагностический анализ по этим сводкам и верни JSON по заданному формату.`,
 		st.Car,
@@ -285,6 +305,7 @@ func (s *Server) runAnalysis(id, extra string) {
 		obdSum,
 		gpsSum,
 		sensorsSum,
+		orDefault(errorsText, "нет данных"),
 		orDefault(extra, "нет"),
 	)
 

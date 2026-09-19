@@ -24,6 +24,7 @@ class TargetElm327Ble(
         fun onState(text: String)
         fun onData(values: ObdValues, monotonicNs: Long)
         fun onDevices(devices: List<DeviceInfo>)
+        fun onErrors(codes: List<String>, raw: String)
     }
 
     data class DeviceInfo(val device: BluetoothDevice, val name: String, val address: String) {
@@ -83,7 +84,7 @@ class TargetElm327Ble(
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 gatt = g; listener.onState("OBDII ${selectedDevice?.address ?: ""} подключён; поиск GATT..."); g.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                running = false; listener.onState("OBDII отключён"); g.close(); gatt = null
+                running = false; listener.onState("OBDII отключён"); listener.onErrors(emptyList(), ""); g.close(); gatt = null
             }
         }
 
@@ -116,6 +117,7 @@ class TargetElm327Ble(
     private fun startElmSession() {
         thread(name = "elm327-session") {
             for (command in listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP6")) sendAndWait(command, 3000)
+            readTroubleCodes()
             running = true; commandIndex = 0; values.speedPidPresent = false; values.speed = null
             listener.onState("ELM327 ${selectedDevice?.address ?: ""} готов; OBD опрашивается"); pollLoop()
         }
@@ -153,6 +155,72 @@ class TargetElm327Ble(
             0x42 -> { val a=b(0) ?: return false; val c=b(2) ?: return false; values.voltage=(a*256+c)/1000.0 }
             else -> return false
         }; return true
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun readTroubleCodes() {
+        try { Thread.sleep(400) } catch (_: InterruptedException) {}
+        sendAndWait("0100", 3000)
+        var raw = ""
+        var codes: List<String> = emptyList()
+        for (attempt in 0 until 2) {
+            raw = sendAndWait("03", 6000)
+            codes = parseDtc(raw, 0x03)
+            if (codes.isNotEmpty() || raw.uppercase(Locale.US).contains("43")) break
+        }
+        val rawLine = "# raw 03: " + raw.replace("\r", " ").replace("\n", " | ").trim()
+        listener.onErrors(codes, rawLine)
+    }
+
+    private fun parseDtc(response: String, mode: Int): List<String> {
+        val marker = "%02X".format(Locale.US, mode + 0x40)
+        val hex = response.lineSequence()
+            .joinToString("") { it.replace(Regex("^[0-9A-Fa-f]:"), "") }
+            .uppercase(Locale.US)
+            .replace(Regex("[^0-9A-F]"), "")
+        val out = LinkedHashSet<String>()
+        var pos = 0
+        while (pos < hex.length) {
+            val idx = hex.indexOf(marker, pos)
+            if (idx < 0 || idx + marker.length > hex.length) break
+            val rest = hex.substring(idx + marker.length)
+            var consumed = 0
+            if (rest.length % 2 == 1) {
+                val count = rest.substring(0, 2).toIntOrNull(16)
+                if (count != null && rest.length >= 2 + count * 4) {
+                    var i = 2
+                    var n = 0
+                    while (n < count && i + 4 <= rest.length) {
+                        val b1 = rest.substring(i, i + 2).toIntOrNull(16) ?: break
+                        val b2 = rest.substring(i + 2, i + 4).toIntOrNull(16) ?: break
+                        if (b1 != 0 || b2 != 0) out += decodeDtc(b1, b2)
+                        i += 4; n++
+                    }
+                    consumed = i
+                }
+            }
+            if (consumed == 0) {
+                var i = 0
+                while (i + 4 <= rest.length) {
+                    val b1 = rest.substring(i, i + 2).toIntOrNull(16) ?: break
+                    val b2 = rest.substring(i + 2, i + 4).toIntOrNull(16) ?: break
+                    if (b1 == 0 && b2 == 0) break
+                    out += decodeDtc(b1, b2)
+                    i += 4
+                }
+                consumed = rest.length
+            }
+            if (consumed == 0) break
+            pos = idx + marker.length + consumed
+        }
+        return out.toList()
+    }
+
+    private fun decodeDtc(b1: Int, b2: Int): String {
+        val letter = when ((b1 shr 6) and 0x03) { 0 -> "P"; 1 -> "C"; 2 -> "B"; else -> "U" }
+        val d1 = (b1 shr 4) and 0x03
+        val d2 = b1 and 0x0F
+        return "$letter$d1$d2%02X".format(Locale.US, b2)
     }
 
     private fun pollLoop() {
