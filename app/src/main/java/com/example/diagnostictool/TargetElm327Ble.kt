@@ -199,7 +199,7 @@ class TargetElm327Ble(
             val timeout = if (guard == 1) firstTimeoutMs else 6000
             val resp = sendAndWait("01%02X".format(Locale.US, base), timeout)
             val set = parseSupportedBitmap(resp, base)
-            if (set.isEmpty()) { log("Ответ на 01%02X не распознан".format(Locale.US, base)); break }
+            if (set.isEmpty()) { log("Ответ на 01${"%02X".format(Locale.US, base)} не распознан: ${clean(resp)}"); break }
             supported.addAll(set)
             if (!set.contains(base + 32)) break
             base += 0x20
@@ -208,11 +208,12 @@ class TargetElm327Ble(
     }
 
     private fun parseSupportedBitmap(resp: String, base: Int): Set<Int> {
-        val hex = resp.uppercase(Locale.US).replace(Regex("[^0-9A-F]"), "")
-        val marker = "41" + "%02X".format(Locale.US, base)
-        val idx = hex.indexOf(marker)
-        if (idx < 0 || idx + marker.length + 8 > hex.length) return emptySet()
-        val data = hex.substring(idx + marker.length, idx + marker.length + 8)
+        val hex = hexData(resp)
+        val pidHex = "%02X".format(Locale.US, base)
+        var idx = hex.indexOf("41" + pidHex)
+        if (idx < 0) idx = hex.indexOf("40" + pidHex)
+        if (idx < 0 || idx + 4 + 8 > hex.length) return emptySet()
+        val data = hex.substring(idx + 4, idx + 4 + 8)
         val out = HashSet<Int>()
         for (bit in 0 until 32) {
             val b = data.substring(bit * 2, bit * 2 + 2).toIntOrNull(16) ?: 0
@@ -260,9 +261,22 @@ class TargetElm327Ble(
 
     private fun consume(text: String) { synchronized(responseLock) { rxBuffer.append(text); responseText.append(text); if (rxBuffer.contains('>')) { promptReceived = true; responseLock.notifyAll(); rxBuffer.clear() } } }
 
+    private fun hexData(resp: String): String {
+        var s = resp.uppercase(Locale.US)
+        for (w in listOf("SEARCHING...", "SEARCHING", "BUS INIT:", "BUS INIT", "UNABLE TO CONNECT", "CAN ERROR", "NO DATA", "STOPPED", "WAITING...", "WAITING", ">")) {
+            s = s.replace(w, " ")
+        }
+        return s.replace(Regex("[^0-9A-F]"), "")
+    }
+
     private fun parseResponse(response: String, pid: Int): Boolean {
-        val hex = response.uppercase(Locale.US).replace(Regex("[^0-9A-F]"), ""); val marker = "41" + "%02X".format(Locale.US, pid); val start = hex.indexOf(marker); if (start < 0) return false
-        val data = hex.substring(start + marker.length); fun b(i: Int): Int? = if (data.length >= i + 2) data.substring(i, i + 2).toIntOrNull(16) else null
+        val hex = hexData(response)
+        val marker = "%02X".format(Locale.US, pid)
+        var start = hex.indexOf("41" + marker)
+        if (start < 0) start = hex.indexOf("40" + marker)
+        if (start < 0) return false
+        val data = hex.substring(start + 4)
+        fun b(i: Int): Int? = if (data.length >= i + 2) data.substring(i, i + 2).toIntOrNull(16) else null
         when (pid) {
             0x0B -> { val a=b(0) ?: return false; values.map=a.toDouble() }
             0x0C -> { val a=b(0) ?: return false; val c=b(2) ?: return false; values.rpm=(a*256+c)/4.0 }
