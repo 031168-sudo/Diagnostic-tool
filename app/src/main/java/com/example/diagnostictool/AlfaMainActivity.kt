@@ -100,6 +100,7 @@ class AlfaMainActivity : ComponentActivity() {
     private var obdValuesText by mutableStateOf(ObdValues().toDisplay())
     private var obdConnected by mutableStateOf(false)
     private var scanCount by mutableStateOf<Int?>(null)
+    private var showObdLog by mutableStateOf(false)
     private var errorCodes by mutableStateOf<List<String>>(emptyList())
     private var errorRaw by mutableStateOf("")
     private val obdLog = mutableStateListOf<String>()
@@ -150,6 +151,7 @@ class AlfaMainActivity : ComponentActivity() {
                         onConnect = { if (obdConnected) obd.disconnect() else requestObd() },
                         onToggleRecord = { toggleRecording() },
                         obdLog = obdLog,
+                        showObdLog = showObdLog,
                         onClearLog = { obdLog.clear() },
                         onShareLog = { shareLiveLog() }
                     )
@@ -301,7 +303,10 @@ class AlfaMainActivity : ComponentActivity() {
             override fun onErrors(codes: List<String>, raw: String) = runOnUiThread { errorCodes = codes; errorRaw = raw }
             override fun onLog(line: String) = runOnUiThread { appendLog(line) }
             override fun onScanning(found: Int) = runOnUiThread { scanCount = found }
-            override fun onConnected(connected: Boolean) = runOnUiThread { obdConnected = connected; if (connected) scanCount = null }
+            override fun onConnected(connected: Boolean) = runOnUiThread {
+                obdConnected = connected
+                if (connected) { scanCount = null; showObdLog = true }
+            }
         })
         statusText = OBD_DISCONNECTED_TEXT
     }
@@ -531,6 +536,7 @@ private fun MainScreen(
     onConnect: () -> Unit,
     onToggleRecord: () -> Unit,
     obdLog: List<String>,
+    showObdLog: Boolean,
     onClearLog: () -> Unit,
     onShareLog: () -> Unit
 ) {
@@ -568,25 +574,27 @@ private fun MainScreen(
             Button(onClick = onToggleRecord, enabled = carEnabled, modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) { Text(if (recording) "ОСТАНОВИТЬ ЗАПИСЬ" else "НАЧАТЬ ЗАПИСЬ") }
             Text(recordStatusText, color = DiagLightGray, fontSize = 16.sp, modifier = Modifier.padding(top = 10.dp, bottom = 16.dp))
 
-            HorizontalDivider(color = DiagGray)
-            Text("Журнал OBD", color = MaterialTheme.colorScheme.onBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = onShareLog) { Text("Отправить") }
-                TextButton(onClick = onClearLog) { Text("Очистить") }
+            if (showObdLog) {
+                HorizontalDivider(color = DiagGray)
+                Text("Журнал OBD", color = MaterialTheme.colorScheme.onBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onShareLog) { Text("Отправить") }
+                    TextButton(onClick = onClearLog) { Text("Очистить") }
+                }
+                val logScroll = rememberScrollState()
+                LaunchedEffect(obdLog.size) { logScroll.animateScrollTo(logScroll.maxValue) }
+                Text(
+                    if (obdLog.isEmpty()) "Пока пусто." else obdLog.joinToString("\n"),
+                    color = DiagLightGray,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(240.dp)
+                        .verticalScroll(logScroll)
+                        .padding(top = 8.dp, bottom = 24.dp)
+                )
             }
-            val logScroll = rememberScrollState()
-            LaunchedEffect(obdLog.size) { logScroll.animateScrollTo(logScroll.maxValue) }
-            Text(
-                if (obdLog.isEmpty()) "Пока пусто. Нажмите «Подключить ELM327»." else obdLog.joinToString("\n"),
-                color = DiagLightGray,
-                fontSize = 11.sp,
-                fontFamily = FontFamily.Monospace,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(240.dp)
-                    .verticalScroll(logScroll)
-                    .padding(top = 8.dp, bottom = 24.dp)
-            )
         }
     }
 }
