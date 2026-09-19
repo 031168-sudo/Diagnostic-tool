@@ -25,6 +25,7 @@ class TargetElm327Ble(
         fun onData(values: ObdValues, monotonicNs: Long)
         fun onDevices(devices: List<DeviceInfo>)
         fun onErrors(codes: List<String>, raw: String)
+        fun onLog(line: String)
     }
 
     data class DeviceInfo(val device: BluetoothDevice, val name: String, val address: String) {
@@ -43,6 +44,7 @@ class TargetElm327Ble(
             "0000fff1-0000-1000-8000-00805f9b34fb",
             "000018f0-0000-1000-8000-00805f9b34fb"
         )
+        private val DEFAULT_POLL = listOf("010C", "010D")
     }
 
     private fun looksLikeObd(name: String, uuids: List<UUID>?): Boolean {
@@ -51,6 +53,7 @@ class TargetElm327Ble(
         if (uuids != null && uuids.any { it.toString().lowercase(Locale.US) in OBD_SERVICE_UUIDS }) return true
         return false
     }
+
     private val adapter = activity.getSystemService(BluetoothManager::class.java).adapter
     private var gatt: BluetoothGatt? = null
     private var writeCharacteristic: BluetoothGattCharacteristic? = null
@@ -64,13 +67,17 @@ class TargetElm327Ble(
     private var commandIndex = 0
     private var selectedDevice: BluetoothDevice? = null
     private val commands = listOf("010C", "010D", "0104", "0111", "010B", "0105", "010F", "0142")
+    private var supportedCommands = DEFAULT_POLL
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    private fun log(line: String) = listener.onLog(line)
 
     @SuppressLint("MissingPermission")
     fun scan(preferredAddress: String? = null) {
         close()
         if (!adapter.isEnabled) { listener.onState("Bluetooth выключен"); return }
         listener.onState("Поиск OBD-адаптеров рядом...")
+        log("Сканирование BLE начато (8 с)")
         val scanner = adapter.bluetoothLeScanner
         val all = LinkedHashMap<String, DeviceInfo>()
         val obd = LinkedHashMap<String, DeviceInfo>()
@@ -83,7 +90,7 @@ class TargetElm327Ble(
                 val uuids = result.scanRecord?.serviceUuids?.map { it.uuid }
                 if (looksLikeObd(name, uuids) || device.address.equals(preferredAddress, true)) obd[device.address] = info
             }
-            override fun onScanFailed(errorCode: Int) { listener.onState("Ошибка BLE scan: $errorCode") }
+            override fun onScanFailed(errorCode: Int) { listener.onState("Ошибка BLE scan: $errorCode"); log("Ошибка BLE scan: $errorCode") }
         }
         scanner.startScan(callback)
         mainHandler.postDelayed({
@@ -94,6 +101,7 @@ class TargetElm327Ble(
                     .thenBy { !looksLikeObd(it.title(), null) }
                     .thenBy { it.title() }
             )
+            log("Найдено устройств: всего ${all.size}, похожих на OBD ${obd.size}")
             if (list.isEmpty()) listener.onState("OBD-адаптеры не найдены") else listener.onDevices(list)
         }, 8000)
     }
@@ -102,6 +110,7 @@ class TargetElm327Ble(
     fun connect(device: BluetoothDevice) {
         close(); selectedDevice = device
         listener.onState("Подключение к ${device.address}...")
+        log("Подключение к ${device.address} (${device.name ?: "без имени"})")
         gatt = device.connectGatt(activity, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
     }
 
@@ -109,15 +118,15 @@ class TargetElm327Ble(
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                gatt = g; listener.onState("OBDII ${selectedDevice?.address ?: ""} подключён; поиск GATT..."); g.discoverServices()
+                gatt = g; listener.onState("OBDII ${selectedDevice?.address ?: ""} подключён; поиск GATT..."); log("GATT подключён (status=$status)"); g.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                running = false; listener.onState("OBDII отключён"); listener.onErrors(emptyList(), ""); g.close(); gatt = null
+                running = false; listener.onState("OBDII отключён"); listener.onErrors(emptyList(), ""); log("GATT отключён (status=$status)"); g.close(); gatt = null
             }
         }
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            if (status != BluetoothGatt.GATT_SUCCESS) { listener.onState("Ошибка GATT: $status"); return }
+            if (status != BluetoothGatt.GATT_SUCCESS) { listener.onState("Ошибка GATT: $status"); log("Ошибка обнаружения служб: $status"); return }
             var bestWrite: BluetoothGattCharacteristic? = null; var bestNotify: BluetoothGattCharacteristic? = null; var bestScore = -1
             for (service in g.services) {
                 val writes = service.characteristics.filter { (it.properties and (BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)) != 0 }
@@ -127,27 +136,63 @@ class TargetElm327Ble(
                     if (score > bestScore) { bestScore = score; bestWrite = w; bestNotify = n }
                 }
             }
-            if (bestWrite == null || bestNotify == null) { listener.onState("У OBDII не найдена BLE UART-служба"); return }
+            if (bestWrite == null || bestNotify == null) { listener.onState("У OBDII не найдена BLE UART-служба"); log("BLE UART не найдена"); return }
             writeCharacteristic = bestWrite; rxCharacteristic = bestNotify
             listener.onState("BLE UART: ${bestWrite.uuid} / ${bestNotify.uuid}")
+            log("BLE UART службы: write=${bestWrite.uuid} notify=${bestNotify.uuid}")
             g.setCharacteristicNotification(bestNotify, true)
             val descriptor = bestNotify.getDescriptor(CLIENT_CONFIG_UUID)
             if (descriptor != null) { descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE; g.writeDescriptor(descriptor) } else startElmSession()
         }
 
         @SuppressLint("MissingPermission")
-        override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) { if (status == BluetoothGatt.GATT_SUCCESS) startElmSession() else listener.onState("Ошибка включения уведомлений BLE: $status") }
+        override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) { if (status == BluetoothGatt.GATT_SUCCESS) startElmSession() else { listener.onState("Ошибка включения уведомлений BLE: $status"); log("Ошибка уведомлений: $status") } }
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) { consume(characteristic.value?.toString(Charsets.US_ASCII) ?: "") }
     }
 
     @SuppressLint("MissingPermission")
     private fun startElmSession() {
         thread(name = "elm327-session") {
-            for (command in listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP6")) sendAndWait(command, 3000)
+            listener.onLog("Инициализация ELM327 (авто-протокол ATSP0)…")
+            for (command in listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP0")) sendAndWait(command, 3000)
+            val id = clean(sendAndWait("ATI", 3000))
+            if (id.isNotEmpty()) log("Адаптер: $id")
+            val proto = clean(sendAndWait("ATDPN", 3000))
+            log("Выбранный протокол (ATDPN): ${if (proto.isEmpty()) "не определён" else proto}")
+            supportedCommands = readSupportedPids()
             readTroubleCodes()
             running = true; commandIndex = 0; values.speedPidPresent = false; values.speed = null
-            listener.onState("ELM327 ${selectedDevice?.address ?: ""} готов; OBD опрашивается"); pollLoop()
+            listener.onState("ELM327 ${selectedDevice?.address ?: ""} готов; OBD опрашивается")
+            log("Опрос PID: ${supportedCommands.joinToString(" ")}")
+            pollLoop()
         }
+    }
+
+    private fun readSupportedPids(): List<String> {
+        val supported = HashSet<Int>()
+        var base = 0x00
+        var guard = 0
+        while (guard < 3) {
+            guard++
+            val resp = sendAndWait("01%02X".format(Locale.US, base), 3000)
+            val hex = resp.uppercase(Locale.US).replace(Regex("[^0-9A-F]"), "")
+            val marker = "41" + "%02X".format(Locale.US, base)
+            val idx = hex.indexOf(marker)
+            if (idx < 0 || idx + marker.length + 8 > hex.length) {
+                log("Поддерживаемые PID: ответ на 01%02X не распознан".format(Locale.US, base))
+                break
+            }
+            val data = hex.substring(idx + marker.length, idx + marker.length + 8)
+            for (bit in 0 until 32) {
+                val b = data.substring(bit * 2, bit * 2 + 2).toIntOrNull(16) ?: 0
+                if ((b and (0x80 shr (bit % 8))) != 0) supported.add(base + 1 + bit)
+            }
+            if (!supported.contains(base + 32)) break
+            base += 0x20
+        }
+        val list = commands.filter { supported.contains(it.substring(2).toInt(16)) }
+        log("Поддерживаемые PID (${supported.size}): " + (list.joinToString(" ").ifEmpty { "нет" }))
+        return if (list.isEmpty()) DEFAULT_POLL else list
     }
 
     @SuppressLint("MissingPermission")
@@ -157,13 +202,20 @@ class TargetElm327Ble(
         c.value = (command + "\r").toByteArray(Charsets.US_ASCII); gatt?.writeCharacteristic(c)
     }
 
+    private fun clean(s: String): String = s.replace("\r", " ").replace("\n", " ").replace(Regex("\\s+"), " ").trim().removeSuffix(">").trim()
+
     private fun sendAndWait(command: String, timeoutMs: Long): String {
-        synchronized(responseLock) {
+        val start = SystemClock.uptimeMillis()
+        val response = synchronized(responseLock) {
             responseText = StringBuilder(); promptReceived = false; rxBuffer.clear(); send(command)
             val deadline = SystemClock.uptimeMillis() + timeoutMs
             while (!promptReceived && SystemClock.uptimeMillis() < deadline) try { responseLock.wait(100) } catch (_: InterruptedException) { Thread.currentThread().interrupt(); break }
-            return responseText.toString()
+            responseText.toString()
         }
+        val ms = SystemClock.uptimeMillis() - start
+        val out = clean(response)
+        listener.onLog("> $command  →  ${if (out.isEmpty()) "(нет ответа)" else out}  [$ms мс]")
+        return response
     }
 
     private fun consume(text: String) { synchronized(responseLock) { rxBuffer.append(text); responseText.append(text); if (rxBuffer.contains('>')) { promptReceived = true; responseLock.notifyAll(); rxBuffer.clear() } } }
@@ -187,7 +239,6 @@ class TargetElm327Ble(
     @SuppressLint("MissingPermission")
     private fun readTroubleCodes() {
         try { Thread.sleep(400) } catch (_: InterruptedException) {}
-        sendAndWait("0100", 3000)
         var raw = ""
         var codes: List<String> = emptyList()
         for (attempt in 0 until 2) {
@@ -195,6 +246,7 @@ class TargetElm327Ble(
             codes = parseDtc(raw, 0x03)
             if (codes.isNotEmpty() || raw.uppercase(Locale.US).contains("43")) break
         }
+        log("Считано кодов DTC: ${if (codes.isEmpty()) "нет" else codes.joinToString(" ")}")
         val rawLine = "# raw 03: " + raw.replace("\r", " ").replace("\n", " | ").trim()
         listener.onErrors(codes, rawLine)
     }
@@ -252,7 +304,8 @@ class TargetElm327Ble(
 
     private fun pollLoop() {
         while (running) {
-            val command = commands[commandIndex++ % commands.size]; val pid = command.substring(2).toInt(16)
+            val list = supportedCommands
+            val command = list[commandIndex++ % list.size]; val pid = command.substring(2).toInt(16)
             if (pid == 0x0D) { values.speedPidPresent = false; values.speed = null }
             val response = sendAndWait(command, 2000)
             if (parseResponse(response, pid)) listener.onData(values.copy(), SystemClock.elapsedRealtimeNanos())

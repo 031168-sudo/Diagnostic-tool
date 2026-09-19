@@ -56,6 +56,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -63,6 +64,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -94,6 +96,8 @@ class AlfaMainActivity : ComponentActivity() {
     private var obdValuesText by mutableStateOf(ObdValues().toDisplay())
     private var errorCodes by mutableStateOf<List<String>>(emptyList())
     private var errorRaw by mutableStateOf("")
+    private val obdLog = mutableStateListOf<String>()
+    private val logTimeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
     private var recording by mutableStateOf(false)
     private var recordStatusText by mutableStateOf("Запись остановлена")
 
@@ -131,7 +135,9 @@ class AlfaMainActivity : ComponentActivity() {
                         onAddCar = { showCarEditor(carStore.create(), true) },
                         onHistory = { showHistory() },
                         onConnect = { requestObd() },
-                        onToggleRecord = { toggleRecording() }
+                        onToggleRecord = { toggleRecording() },
+                        obdLog = obdLog,
+                        onClearLog = { obdLog.clear() }
                     )
 
                     carEditor?.let { state ->
@@ -217,6 +223,11 @@ class AlfaMainActivity : ComponentActivity() {
     fun currentErrorCodes(): List<String> = errorCodes
     fun currentErrorRaw(): String = errorRaw
 
+    private fun appendLog(line: String) {
+        obdLog.add("[${logTimeFormat.format(Date())}] $line")
+        while (obdLog.size > 400) obdLog.removeAt(0)
+    }
+
     fun hasLocationPermission(): Boolean = if (Build.VERSION.SDK_INT < 23) true else
         checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
         checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
@@ -227,6 +238,7 @@ class AlfaMainActivity : ComponentActivity() {
             override fun onState(text: String) {
                 runOnUiThread {
                     statusText = text
+                    appendLog("• $text")
                     if (text.contains("ELM327") && text.contains("готов")) recorder?.setObdActive(true)
                     if (text.contains("отключён", true)) recorder?.setObdActive(false)
                 }
@@ -237,6 +249,7 @@ class AlfaMainActivity : ComponentActivity() {
             }
             override fun onDevices(devices: List<TargetElm327Ble.DeviceInfo>) = runOnUiThread { obdDevices = devices }
             override fun onErrors(codes: List<String>, raw: String) = runOnUiThread { errorCodes = codes; errorRaw = raw }
+            override fun onLog(line: String) = runOnUiThread { appendLog(line) }
         })
         statusText = OBD_DISCONNECTED_TEXT
     }
@@ -463,7 +476,9 @@ private fun MainScreen(
     onAddCar: () -> Unit,
     onHistory: () -> Unit,
     onConnect: () -> Unit,
-    onToggleRecord: () -> Unit
+    onToggleRecord: () -> Unit,
+    obdLog: List<String>,
+    onClearLog: () -> Unit
 ) {
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         Column(
@@ -497,7 +512,26 @@ private fun MainScreen(
                 }
             }
             Button(onClick = onToggleRecord, enabled = carEnabled, modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) { Text(if (recording) "ОСТАНОВИТЬ ЗАПИСЬ" else "НАЧАТЬ ЗАПИСЬ") }
-            Text(recordStatusText, color = DiagLightGray, fontSize = 16.sp, modifier = Modifier.padding(top = 10.dp, bottom = 24.dp))
+            Text(recordStatusText, color = DiagLightGray, fontSize = 16.sp, modifier = Modifier.padding(top = 10.dp, bottom = 16.dp))
+
+            HorizontalDivider(color = DiagGray)
+            Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Журнал OBD", color = MaterialTheme.colorScheme.onBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                TextButton(onClick = onClearLog) { Text("Очистить") }
+            }
+            val logScroll = rememberScrollState()
+            LaunchedEffect(obdLog.size) { logScroll.animateScrollTo(logScroll.maxValue) }
+            Text(
+                if (obdLog.isEmpty()) "Пока пусто. Нажмите «Подключить ELM327»." else obdLog.joinToString("\n"),
+                color = DiagLightGray,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(240.dp)
+                    .verticalScroll(logScroll)
+                    .padding(top = 8.dp, bottom = 24.dp)
+            )
         }
     }
 }
