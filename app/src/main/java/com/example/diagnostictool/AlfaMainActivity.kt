@@ -1,11 +1,13 @@
 package com.example.diagnostictool
 
 import android.Manifest
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.provider.MediaStore
 import android.view.WindowManager
 import android.widget.ImageView
@@ -71,6 +73,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.FileProvider
 import com.example.diagnostictool.ui.theme.DiagGray
 import com.example.diagnostictool.ui.theme.DiagLightGray
 import com.example.diagnostictool.ui.theme.DiagRed
@@ -78,6 +81,7 @@ import com.example.diagnostictool.ui.theme.DiagnosticTheme
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.io.File
 import kotlinx.coroutines.launch
 
 private const val OBD_DISCONNECTED_TEXT = "OBD-адаптер не подключен"
@@ -241,14 +245,37 @@ class AlfaMainActivity : ComponentActivity() {
     }
 
     private fun shareLiveLog() {
-        val uri = liveLog.resolveUri()
-        if (uri == null) { Toast.makeText(this, "Файл журнала ещё не создан", Toast.LENGTH_LONG).show(); return }
+        val src = liveLog.file
+        if (!src.exists()) { Toast.makeText(this, "Файл журнала ещё не создан", Toast.LENGTH_LONG).show(); return }
+        val uri = copyLogToDownloads(src)
+        if (uri == null) { Toast.makeText(this, "Не удалось подготовить файл журнала", Toast.LENGTH_LONG).show(); return }
         startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }, "Отправить журнал"))
     }
+
+    private fun copyLogToDownloads(src: File): Uri? = runCatching {
+        val name = "obd_log_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".txt"
+        if (Build.VERSION.SDK_INT >= 29) {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, name)
+                put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+                put(MediaStore.Downloads.RELATIVE_PATH, "Download/DiagnosticTool/logs")
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("insert")
+            contentResolver.openOutputStream(uri)?.use { it.write(src.readBytes()) }
+            contentResolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+            uri
+        } else {
+            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "DiagnosticTool/logs").apply { mkdirs() }
+            val dst = File(dir, name)
+            src.copyTo(dst, overwrite = true)
+            FileProvider.getUriForFile(this, "$packageName.fileprovider", dst)
+        }
+    }.getOrNull()
 
     fun hasLocationPermission(): Boolean = if (Build.VERSION.SDK_INT < 23) true else
         checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
