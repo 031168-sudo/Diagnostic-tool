@@ -84,7 +84,7 @@ class TargetElm327Ble(
         listener.onScanning(0)
         val scanner = adapter.bluetoothLeScanner
         val all = LinkedHashMap<String, DeviceInfo>()
-        val obd = LinkedHashMap<String, DeviceInfo>()
+        val seen = HashSet<String>()
         val callback = object : android.bluetooth.le.ScanCallback() {
             override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
                 val device = result.device
@@ -92,21 +92,32 @@ class TargetElm327Ble(
                 val info = DeviceInfo(device, name, device.address)
                 all[device.address] = info
                 val uuids = result.scanRecord?.serviceUuids?.map { it.uuid }
-                if (looksLikeObd(name, uuids) || device.address.equals(preferredAddress, true)) obd[device.address] = info
-                listener.onScanning(if (obd.isNotEmpty()) obd.size else all.size)
+                val isObd = looksLikeObd(name, uuids) || device.address.equals(preferredAddress, true)
+                if (seen.add(device.address)) {
+                    val uuidStr = uuids?.joinToString(" ") { it.toString() } ?: "-"
+                    log("BLE: \"${name.ifBlank { "(без имени)" }}\" ${device.address} rssi=${result.rssi} obd=$isObd uuids=[$uuidStr]")
+                }
+                listener.onScanning(all.size)
             }
             override fun onScanFailed(errorCode: Int) { listener.onState("Ошибка BLE scan: $errorCode"); log("Ошибка BLE scan: $errorCode") }
         }
+        try {
+            for (device in adapter.bondedDevices ?: emptySet()) {
+                val name = try { device.name ?: "" } catch (_: Exception) { "" }
+                val info = DeviceInfo(device, name, device.address)
+                if (!all.containsKey(device.address)) all[device.address] = info
+            }
+        } catch (_: Exception) {}
         scanner.startScan(callback)
         mainHandler.postDelayed({
             scanner.stopScan(callback)
-            val primary = if (obd.isNotEmpty()) obd.values.toList() else all.values.toList()
-            val list = primary.sortedWith(
+            val list = all.values.sortedWith(
                 compareBy<DeviceInfo> { !it.address.equals(preferredAddress, true) }
                     .thenBy { !looksLikeObd(it.title(), null) }
                     .thenBy { it.title() }
             )
-            log("Найдено устройств: всего ${all.size}, похожих на OBD ${obd.size}")
+            val obdCount = list.count { looksLikeObd(it.title(), null) }
+            log("Найдено устройств: всего ${list.size}, похожих на OBD $obdCount")
             if (list.isEmpty()) listener.onState("OBD-адаптеры не найдены") else listener.onDevices(list)
         }, 8000)
     }
