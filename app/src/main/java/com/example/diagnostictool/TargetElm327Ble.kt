@@ -155,7 +155,7 @@ class TargetElm327Ble(
     private fun startElmSession() {
         thread(name = "elm327-session") {
             listener.onLog("Инициализация ELM327…")
-            for (command in listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0")) sendAndWait(command, 5000)
+            for (command in listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATAT1")) sendAndWait(command, 5000)
             val id = clean(sendAndWait("ATI", 3000))
             if (id.isNotEmpty()) log("Адаптер: $id")
 
