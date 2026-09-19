@@ -26,6 +26,8 @@ class TargetElm327Ble(
         fun onDevices(devices: List<DeviceInfo>)
         fun onErrors(codes: List<String>, raw: String)
         fun onLog(line: String)
+        fun onScanning(found: Int)
+        fun onConnected(connected: Boolean)
     }
 
     data class DeviceInfo(val device: BluetoothDevice, val name: String, val address: String) {
@@ -79,6 +81,7 @@ class TargetElm327Ble(
         if (!adapter.isEnabled) { listener.onState("Bluetooth выключен"); return }
         listener.onState("Поиск OBD-адаптеров рядом...")
         log("Сканирование BLE начато (8 с)")
+        listener.onScanning(0)
         val scanner = adapter.bluetoothLeScanner
         val all = LinkedHashMap<String, DeviceInfo>()
         val obd = LinkedHashMap<String, DeviceInfo>()
@@ -90,6 +93,7 @@ class TargetElm327Ble(
                 all[device.address] = info
                 val uuids = result.scanRecord?.serviceUuids?.map { it.uuid }
                 if (looksLikeObd(name, uuids) || device.address.equals(preferredAddress, true)) obd[device.address] = info
+                listener.onScanning(if (obd.isNotEmpty()) obd.size else all.size)
             }
             override fun onScanFailed(errorCode: Int) { listener.onState("Ошибка BLE scan: $errorCode"); log("Ошибка BLE scan: $errorCode") }
         }
@@ -108,6 +112,15 @@ class TargetElm327Ble(
     }
 
     @SuppressLint("MissingPermission")
+    fun disconnect() {
+        running = false
+        listener.onState("OBDII отключён")
+        listener.onConnected(false)
+        try { gatt?.disconnect() } catch (_: Exception) {}
+        close()
+    }
+
+    @SuppressLint("MissingPermission")
     fun connect(device: BluetoothDevice) {
         close(); selectedDevice = device
         listener.onState("Подключение к ${device.address}...")
@@ -119,9 +132,9 @@ class TargetElm327Ble(
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                gatt = g; listener.onState("OBDII ${selectedDevice?.address ?: ""} подключён; поиск GATT..."); log("GATT подключён (status=$status)"); g.discoverServices()
+                gatt = g; listener.onConnected(true); listener.onState("OBDII ${selectedDevice?.address ?: ""} подключён; поиск GATT..."); log("GATT подключён (status=$status)"); g.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                running = false; listener.onState("OBDII отключён"); listener.onErrors(emptyList(), ""); log("GATT отключён (status=$status)"); g.close(); gatt = null
+                running = false; listener.onConnected(false); listener.onState("OBDII отключён"); listener.onErrors(emptyList(), ""); log("GATT отключён (status=$status)"); g.close(); gatt = null
             }
         }
 

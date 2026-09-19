@@ -95,6 +95,8 @@ class AlfaMainActivity : ComponentActivity() {
     private var currentCar by mutableStateOf<Car?>(null)
     private var statusText by mutableStateOf(OBD_DISCONNECTED_TEXT)
     private var obdValuesText by mutableStateOf(ObdValues().toDisplay())
+    private var obdConnected by mutableStateOf(false)
+    private var scanCount by mutableStateOf<Int?>(null)
     private var errorCodes by mutableStateOf<List<String>>(emptyList())
     private var errorRaw by mutableStateOf("")
     private val obdLog = mutableStateListOf<String>()
@@ -137,7 +139,12 @@ class AlfaMainActivity : ComponentActivity() {
                         onChangeCar = { showCarsDialog() },
                         onAddCar = { showCarEditor(carStore.create(), true) },
                         onHistory = { showHistory() },
-                        onConnect = { requestObd() },
+                        connectLabel = when {
+                            obdConnected -> "Отключить"
+                            scanCount != null -> "Доступные устройства: $scanCount"
+                            else -> "Подключить ELM327"
+                        },
+                        onConnect = { if (obdConnected) obd.disconnect() else requestObd() },
                         onToggleRecord = { toggleRecording() },
                         obdLog = obdLog,
                         onClearLog = { obdLog.clear() },
@@ -296,6 +303,7 @@ class AlfaMainActivity : ComponentActivity() {
                 runOnUiThread {
                     statusText = text
                     appendLog("• $text")
+                    if (text.contains("не найдены") || text.contains("выключен") || text.contains("Ошибка BLE")) scanCount = null
                     if (text.contains("ELM327") && text.contains("готов")) recorder?.setObdActive(true)
                     if (text.contains("отключён", true)) recorder?.setObdActive(false)
                 }
@@ -304,9 +312,11 @@ class AlfaMainActivity : ComponentActivity() {
                 runOnUiThread { obdValuesText = values.toDisplay() }
                 recorder?.onObd(values, monotonicNs)
             }
-            override fun onDevices(devices: List<TargetElm327Ble.DeviceInfo>) = runOnUiThread { obdDevices = devices }
+            override fun onDevices(devices: List<TargetElm327Ble.DeviceInfo>) = runOnUiThread { scanCount = null; obdDevices = devices }
             override fun onErrors(codes: List<String>, raw: String) = runOnUiThread { errorCodes = codes; errorRaw = raw }
             override fun onLog(line: String) = runOnUiThread { appendLog(line) }
+            override fun onScanning(found: Int) = runOnUiThread { scanCount = found }
+            override fun onConnected(connected: Boolean) = runOnUiThread { obdConnected = connected; if (connected) scanCount = null }
         })
         statusText = OBD_DISCONNECTED_TEXT
     }
@@ -532,6 +542,7 @@ private fun MainScreen(
     onChangeCar: () -> Unit,
     onAddCar: () -> Unit,
     onHistory: () -> Unit,
+    connectLabel: String,
     onConnect: () -> Unit,
     onToggleRecord: () -> Unit,
     obdLog: List<String>,
@@ -558,7 +569,7 @@ private fun MainScreen(
             HorizontalDivider(Modifier.padding(top = 14.dp), color = DiagGray)
             Text("Сбор информации", color = MaterialTheme.colorScheme.onBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp))
             Text(statusText, color = DiagLightGray, fontSize = 16.sp, modifier = Modifier.padding(top = 10.dp))
-            Button(onClick = onConnect, enabled = carEnabled, modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) { Text("Подключить ELM327") }
+            Button(onClick = onConnect, enabled = carEnabled, modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) { Text(connectLabel) }
             Row(Modifier.fillMaxWidth().padding(top = 12.dp)) {
                 Text(obdValuesText, color = MaterialTheme.colorScheme.onBackground, fontSize = 18.sp, modifier = Modifier.weight(1f))
                 Column(Modifier.weight(1f).padding(start = 12.dp)) {
