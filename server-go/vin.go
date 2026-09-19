@@ -127,8 +127,16 @@ func (c *vinCache) put(key string, value VINResult) {
 	c.m[key] = value
 }
 
+var vinCyrillic = strings.NewReplacer(
+	"А", "A", "В", "B", "С", "C", "Е", "E", "Н", "H", "К", "K", "М", "M", "Р", "P", "Т", "T", "У", "Y", "Х", "X",
+	"Ѕ", "S", "Ј", "J", "І", "1", "О", "0",
+	"а", "A", "в", "B", "с", "C", "е", "E", "н", "H", "к", "K", "м", "M", "р", "P", "т", "T", "у", "Y", "х", "X",
+	"ѕ", "S", "ј", "J", "і", "1", "о", "0",
+)
+
 func normalizeVIN(raw string) (string, bool) {
-	v := strings.ToUpper(strings.TrimSpace(raw))
+	v := vinCyrillic.Replace(strings.TrimSpace(raw))
+	v = strings.ToUpper(v)
 	v = strings.NewReplacer(" ", "", "-", "", ".", "", "\t", "").Replace(v)
 	if !vinPattern.MatchString(v) {
 		return v, false
