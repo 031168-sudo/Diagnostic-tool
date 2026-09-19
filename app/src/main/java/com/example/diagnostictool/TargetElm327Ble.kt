@@ -154,18 +154,23 @@ class TargetElm327Ble(
     @SuppressLint("MissingPermission")
     private fun startElmSession() {
         thread(name = "elm327-session") {
-            listener.onLog("Инициализация ELM327…")
-            for (command in listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATAT1")) sendAndWait(command, 5000)
-            val id = clean(sendAndWait("ATI", 3000))
-            if (id.isNotEmpty()) log("Адаптер: $id")
+            try {
+                listener.onLog("Инициализация ELM327…")
+                for (command in listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATAT1")) sendAndWait(command, 5000)
+                val id = clean(sendAndWait("ATI", 3000))
+                if (id.isNotEmpty()) log("Адаптер: $id")
 
-            supportedCommands = establishProtocolAndPids()
+                supportedCommands = establishProtocolAndPids()
 
-            readTroubleCodes()
-            running = true; commandIndex = 0; values.speedPidPresent = false; values.speed = null
-            listener.onState("ELM327 ${selectedDevice?.address ?: ""} готов; OBD опрашивается")
-            log("Опрос PID: ${supportedCommands.joinToString(" ")}")
-            pollLoop()
+                readTroubleCodes()
+                running = true; commandIndex = 0; values.speedPidPresent = false; values.speed = null
+                listener.onState("ELM327 ${selectedDevice?.address ?: ""} готов; OBD опрашивается")
+                log("Опрос PID: ${supportedCommands.joinToString(" ")}")
+                pollLoop()
+            } catch (t: Throwable) {
+                log("Ошибка OBD-сессии: ${t.javaClass.simpleName}: ${t.message}")
+                listener.onState("Ошибка OBD: ${t.message}")
+            }
         }
     }
 
@@ -216,7 +221,8 @@ class TargetElm327Ble(
         val data = hex.substring(idx + 4, idx + 4 + 8)
         val out = HashSet<Int>()
         for (bit in 0 until 32) {
-            val b = data.substring(bit * 2, bit * 2 + 2).toIntOrNull(16) ?: 0
+            val byteIndex = bit / 8
+            val b = data.substring(byteIndex * 2, byteIndex * 2 + 2).toIntOrNull(16) ?: 0
             if ((b and (0x80 shr (bit % 8))) != 0) out.add(base + 1 + bit)
         }
         return out

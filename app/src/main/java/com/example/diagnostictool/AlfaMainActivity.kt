@@ -99,6 +99,7 @@ class AlfaMainActivity : ComponentActivity() {
     private var errorRaw by mutableStateOf("")
     private val obdLog = mutableStateListOf<String>()
     private val logTimeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+    private val liveLog by lazy { LiveLog(this) }
     private var recording by mutableStateOf(false)
     private var recordStatusText by mutableStateOf("Запись остановлена")
 
@@ -121,6 +122,7 @@ class AlfaMainActivity : ComponentActivity() {
         enableEdgeToEdge()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         configureObd()
+        appendLog("Файл журнала: ${liveLog.file.absolutePath}")
         setContent {
             DiagnosticTheme {
                 Box(Modifier.fillMaxSize()) {
@@ -227,8 +229,10 @@ class AlfaMainActivity : ComponentActivity() {
     fun currentErrorRaw(): String = errorRaw
 
     private fun appendLog(line: String) {
-        obdLog.add("[${logTimeFormat.format(Date())}] $line")
+        val entry = "[${logTimeFormat.format(Date())}] $line"
+        obdLog.add(entry)
         while (obdLog.size > 400) obdLog.removeAt(0)
+        liveLog.append(entry)
     }
 
     private fun buildLogText(): String {
