@@ -13,24 +13,26 @@ import (
 	"strings"
 )
 
-const systemPrompt = `Ты — автомобильный диагност приложения Diagnostic Tool. Анализируй только предоставленные данные и явно отделяй факт от гипотезы. Сопоставляй audio, OBD, GPS и датчики по общей временной шкале. Не утверждай неисправность конкретной детали, если данные её не доказывают. Если для различения причин нужен простой дополнительный тест или вопрос владельцу — задай его.
+const systemPrompt = `Ты — автомобильный диагност приложения Alfa Diagnostic. Анализируй только предоставленные данные, отделяй факт от гипотезы и пиши кратко и ясно, как опытный мастер. Сопоставляй аудио, OBD, GPS и датчики по общей временной шкале. Не утверждай неисправность конкретной детали, если данные её не доказывают. Если для различения причин нужен простой тест или вопрос владельцу — задай его.
 
 Отвечай СТРОГО одним JSON-объектом без markdown:
 {"state":"question|completed","stage":"...","message":"...","question":"...","options":["..."],"conclusion":"...","document":{"complaint":"...","analysis":"...","results":["..."],"errors":[{"code":"...","meaning":"...","cause":"...","remedy":"..."}],"errorsNote":"...","conclusion":"...","priority":"...","recommended":"...","limitation":"..."}}
 Для question поля conclusion и document пустые/отсутствуют. Для completed question пустое.
 
-При завершении заключение должно быть техническим и структурированным. Заполняй поля document:
-- complaint — жалоба владельца, кратко и по существу (2–4 предложения);
-- analysis — что и как анализировалось: какие данные сопоставлялись и по какой шкале;
-- results — массив строк, конкретные наблюдения по данным (корреляции, временные закономерности, что исключено);
-- errors — разбор каждого считанного кода неисправности (DTC): code — код, meaning — что означает, cause — возможные причины, remedy — как устранить и что проверить;
-- errorsNote — связаны ли выявленные коды с акустической жалобой. Если связаны — объясни, как именно; если не связаны — прямо напиши, что выявленные ошибки не связаны с посторонними звуками. Если кодов нет — напиши, что коды неисправностей не обнаружены;
-- conclusion — диагностическое заключение: наиболее согласующаяся группа причин;
-- priority — что проверить в первую очередь (нумерованный список в одну строку);
-- recommended — как и где проводить проверку автомобиля;
-- limitation — ограничения анализа.
-Если считанные коды связаны с посторонними звуками, обязательно учти их в анализе и заключении.
-Поле conclusion продублируй связным текстом всего заключения для чата.`
+Стиль: коротко, по делу, без воды и повторений, без перечисления всех числовых значений — только ключевые. Пиши так, чтобы было понятно владельцу и полезно мастеру.
+
+При завершении заполняй поля document:
+- complaint — жалоба владельца, 2–3 предложения;
+- analysis — что анализировалось, 2–3 предложения;
+- results — 4–6 пунктов: только значимые наблюдения (частотные характеристики звука, его связь с нагрузкой и оборотами, что исключено);
+- errors — разбор каждого кода DTC: code, meaning, cause, remedy;
+- errorsNote — связаны ли выявленные коды с акустической жалобой. Если связаны — объясни как; если нет — прямо скажи, что не связаны. Если кодов нет — напиши, что коды не обнаружены;
+- conclusion — наиболее вероятная группа причин, 2–3 предложения;
+- priority — что проверить в первую очередь, одной строкой;
+- recommended — как и где проверять автомобиль, 2–3 предложения;
+- limitation — ограничения анализа, 1–2 предложения.
+Если коды связаны с посторонними звуками — учти их в анализе и заключении.
+Поле conclusion продублируй связным текстом заключения для чата.`
 
 const followUpPrompt = `Ты продолжаешь диалог по автомобильной диагностике. Отвечай по имеющимся данным, не придумывай измерения и чётко отделяй факт от предположения.`
 
@@ -48,8 +50,14 @@ type modelResult struct {
 
 func parseModelJSON(text string) (modelResult, error) {
 	var r modelResult
-	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &r); err == nil {
+	trimmed := strings.TrimSpace(text)
+	if err := json.Unmarshal([]byte(trimmed), &r); err == nil {
 		return r, nil
+	}
+	if obj := extractJSONObject(trimmed); obj != "" {
+		if err := json.Unmarshal([]byte(obj), &r); err == nil {
+			return r, nil
+		}
 	}
 	a := strings.Index(text, "{")
 	b := strings.LastIndex(text, "}")
@@ -59,6 +67,53 @@ func parseModelJSON(text string) (modelResult, error) {
 		}
 	}
 	return r, errors.New("ИИ вернул ответ не в JSON-формате")
+}
+
+func extractJSONObject(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "```") {
+		s = strings.TrimPrefix(s, "```")
+		if i := strings.IndexByte(s, '\n'); i >= 0 {
+			s = s[i+1:]
+		}
+		if j := strings.LastIndex(s, "```"); j >= 0 {
+			s = s[:j]
+		}
+		s = strings.TrimSpace(s)
+	}
+	start := strings.IndexByte(s, '{')
+	if start < 0 {
+		return ""
+	}
+	depth := 0
+	inStr := false
+	esc := false
+	for i := start; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			switch {
+			case esc:
+				esc = false
+			case c == '\\':
+				esc = true
+			case c == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return s[start : i+1]
+			}
+		}
+	}
+	return ""
 }
 
 func readTextIfExists(path string, max int) string {
@@ -220,8 +275,10 @@ func (s *Server) runAnalysis(id, extra string) {
 
 	metrics := WavMetrics{}
 	var audioRMS []float64
+	var audioBytes []byte
 	if audioPath != "" {
 		if b, err := os.ReadFile(audioPath); err == nil {
+			audioBytes = b
 			metrics = wavMetrics(b)
 			audioRMS = wavPerSecondRMS(b)
 		}
@@ -255,6 +312,7 @@ func (s *Server) runAnalysis(id, extra string) {
 	gpsSum := summarizeTable("GPS", gpsTable, gpsErr)
 	sensorsSum := summarizeTable("SENSORS", sensorsTable, sensorsErr)
 	corr := audioCorrelations(audioRMS, obdTable, sensorsTable, gpsTable)
+	spectrum := audioSpectrumText(audioBytes, obdTable)
 
 	prompt := fmt.Sprintf(`Данные автомобиля:
 %s
@@ -269,6 +327,9 @@ func (s *Server) runAnalysis(id, extra string) {
 %s
 
 Аудио-динамика:
+%s
+
+Акустический спектр:
 %s
 
 Распознанная речь:
@@ -300,6 +361,7 @@ func (s *Server) runAnalysis(id, extra string) {
 		session,
 		metricsJSON,
 		audioTimelineText(audioRMS),
+		orDefault(spectrum, "недостаточно данных"),
 		orDefault(transcript, "нет"),
 		orDefault(corr, "недостаточно данных"),
 		obdSum,
@@ -318,10 +380,11 @@ func (s *Server) runAnalysis(id, extra string) {
 	}
 	log.Printf("analysis %s: prompt %d символов (~%d токенов)", id, len(prompt), len(prompt)/4)
 
-	answer, err := s.ds.Chat(ctx, []ChatMessage{
+	messages := []ChatMessage{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: prompt},
-	})
+	}
+	answer, err := s.ds.Chat(ctx, messages, true)
 	if err != nil {
 		s.fail(id, err)
 		return
@@ -329,8 +392,20 @@ func (s *Server) runAnalysis(id, extra string) {
 
 	result, err := parseModelJSON(answer)
 	if err != nil {
-		s.fail(id, err)
-		return
+		retryMessages := append(messages,
+			ChatMessage{Role: "assistant", Content: answer},
+			ChatMessage{Role: "user", Content: "Твой ответ не является корректным JSON. Верни ТОЛЬКО валидный JSON-объект по заданной схеме, без markdown и пояснений."},
+		)
+		answer, err = s.ds.Chat(ctx, retryMessages, true)
+		if err != nil {
+			s.fail(id, err)
+			return
+		}
+		result, err = parseModelJSON(answer)
+		if err != nil {
+			s.fail(id, err)
+			return
+		}
 	}
 
 	var doc *ConclusionDoc

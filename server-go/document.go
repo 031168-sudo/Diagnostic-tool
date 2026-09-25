@@ -39,10 +39,13 @@ type ConclusionDoc struct {
 	Errors      []ErrorItem `json:"errors"`
 	ErrorsNote  string      `json:"errorsNote"`
 	Conclusion  string      `json:"conclusion"`
-	Priority    string   `json:"priority"`
-	Recommended string   `json:"recommended"`
-	Limitation  string   `json:"limitation"`
+	Priority    string      `json:"priority"`
+	Recommended string      `json:"recommended"`
+	Limitation  string      `json:"limitation"`
+	Disclaimer  string      `json:"disclaimer"`
 }
+
+const legalDisclaimer = "Настоящее заключение сформировано автоматически на основании предоставленных данных (аудиозаписи, показаний OBD-II, GPS и датчиков автомобиля). Оно носит рекомендательный и информационный характер, не является точной диагностикой и не заменяет осмотр и выявление неисправности квалифицированным специалистом в техцентре. Решение о ремонте и эксплуатации автомобиля принимает владелец."
 
 type docPart struct {
 	Complaint   string      `json:"complaint"`
@@ -93,6 +96,7 @@ func buildConclusionDoc(st *SessionState, metrics WavMetrics, part docPart) *Con
 		Priority:    strings.TrimSpace(part.Priority),
 		Recommended: strings.TrimSpace(part.Recommended),
 		Limitation:  strings.TrimSpace(part.Limitation),
+		Disclaimer:  legalDisclaimer,
 	}
 	if doc.Complaint == "" {
 		doc.Complaint = strings.TrimSpace(st.Complaint)

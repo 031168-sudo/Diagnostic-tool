@@ -37,12 +37,16 @@ func (d *DeepSeek) Enabled() bool {
 	return d != nil && d.apiKey != "" && d.baseURL != ""
 }
 
-func (d *DeepSeek) Chat(ctx context.Context, messages []ChatMessage) (string, error) {
-	payload, err := json.Marshal(map[string]any{
+func (d *DeepSeek) Chat(ctx context.Context, messages []ChatMessage, jsonMode bool) (string, error) {
+	body := map[string]any{
 		"model":    d.model,
 		"messages": messages,
 		"stream":   false,
-	})
+	}
+	if jsonMode {
+		body["response_format"] = map[string]string{"type": "json_object"}
+	}
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return "", err
 	}

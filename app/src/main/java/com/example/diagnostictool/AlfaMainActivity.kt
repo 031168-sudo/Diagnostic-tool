@@ -7,6 +7,9 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.os.Environment
 import android.provider.MediaStore
 import android.view.WindowManager
@@ -23,6 +26,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -41,12 +47,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -65,6 +74,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -74,7 +84,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
+import com.example.diagnostictool.ui.theme.DiagButtonGray
 import com.example.diagnostictool.ui.theme.DiagGray
+import com.example.diagnostictool.ui.theme.DiagGreen
 import com.example.diagnostictool.ui.theme.DiagLightGray
 import com.example.diagnostictool.ui.theme.DiagRed
 import com.example.diagnostictool.ui.theme.DiagnosticTheme
@@ -85,6 +97,8 @@ import java.io.File
 import kotlinx.coroutines.launch
 
 private const val OBD_DISCONNECTED_TEXT = "OBD-адаптер не подключен"
+
+private fun formatDuration(totalSec: Int): String = "%d:%02d".format(totalSec / 60, totalSec % 60)
 
 class AlfaMainActivity : ComponentActivity() {
     private lateinit var obd: TargetElm327Ble
@@ -107,6 +121,17 @@ class AlfaMainActivity : ComponentActivity() {
     private val logTimeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
     private val liveLog by lazy { LiveLog(this) }
     private var recording by mutableStateOf(false)
+    private var recordElapsedSec by mutableStateOf(0)
+    private var recordStartElapsed = 0L
+    private val recordTimerHandler = Handler(Looper.getMainLooper())
+    private val recordTick = object : Runnable {
+        override fun run() {
+            if (recording) {
+                recordElapsedSec = ((SystemClock.elapsedRealtime() - recordStartElapsed) / 1000).toInt()
+                recordTimerHandler.postDelayed(this, 500)
+            }
+        }
+    }
     private var recordStatusText by mutableStateOf("Запись остановлена")
 
     private var showRecordWarning by mutableStateOf(false)
@@ -126,7 +151,6 @@ class AlfaMainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         configureObd()
         appendLog("Файл журнала: ${liveLog.displayPath()}")
         setContent {
@@ -135,10 +159,11 @@ class AlfaMainActivity : ComponentActivity() {
                     MainScreen(
                         carTitle = currentCar?.title() ?: "Автомобиль не выбран",
                         carEnabled = currentCar != null,
-                        statusText = statusText,
+                        obdConnected = obdConnected,
                         obdValuesText = obdValuesText,
                         errorCodes = errorCodes,
                         recording = recording,
+                        recordElapsedSec = recordElapsedSec,
                         recordStatusText = recordStatusText,
                         onChangeCar = { showCarsDialog() },
                         onAddCar = { showCarEditor(carStore.create(), true) },
@@ -454,6 +479,14 @@ class AlfaMainActivity : ComponentActivity() {
             onLimitReached = { r -> stopRecording(r, true) }
         )
         recorder!!.start(); recording = true
+        setKeepScreenOn(true)
+        recordStartElapsed = SystemClock.elapsedRealtime(); recordElapsedSec = 0
+        recordTimerHandler.removeCallbacks(recordTick); recordTimerHandler.post(recordTick)
+    }
+
+    private fun setKeepScreenOn(on: Boolean) {
+        if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
     private fun toggleRecording() {
@@ -473,6 +506,8 @@ class AlfaMainActivity : ComponentActivity() {
         if (recorder !== r) return
         recorder = null
         recording = false
+        setKeepScreenOn(false)
+        recordTimerHandler.removeCallbacks(recordTick); recordElapsedSec = 0
         Thread {
             r.stop()
             val uris = r.sessionUris()
@@ -497,7 +532,7 @@ class AlfaMainActivity : ComponentActivity() {
         uploadDiagnostic(state.car, state.sessionName, complaint, lastSessionUris)
     }
 
-    override fun onDestroy() { recorder?.stop(); recorder = null; if (::obd.isInitialized) obd.close(); super.onDestroy() }
+    override fun onDestroy() { recorder?.stop(); recorder = null; setKeepScreenOn(false); if (::obd.isInitialized) obd.close(); super.onDestroy() }
 }
 
 private class CarEditorState(val carId: String, val returnToDiagnostic: Boolean, car: Car) {
@@ -524,10 +559,11 @@ private class PostRecordState(val car: Car, val sessionName: String, val limitRe
 private fun MainScreen(
     carTitle: String,
     carEnabled: Boolean,
-    statusText: String,
+    obdConnected: Boolean,
     obdValuesText: String,
     errorCodes: List<String>,
     recording: Boolean,
+    recordElapsedSec: Int,
     recordStatusText: String,
     onChangeCar: () -> Unit,
     onAddCar: () -> Unit,
@@ -557,9 +593,12 @@ private fun MainScreen(
             }
             Button(onClick = onHistory, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = DiagGray)) { Text("История диагностики") }
             HorizontalDivider(Modifier.padding(top = 14.dp), color = DiagGray)
-            Text("Сбор информации", color = MaterialTheme.colorScheme.onBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 14.dp))
-            Text(statusText, color = DiagLightGray, fontSize = 16.sp, modifier = Modifier.padding(top = 10.dp))
-            Button(onClick = onConnect, enabled = carEnabled, modifier = Modifier.fillMaxWidth().padding(top = 10.dp)) { Text(connectLabel) }
+            Button(
+                onClick = onConnect,
+                enabled = carEnabled,
+                colors = ButtonDefaults.buttonColors(containerColor = if (obdConnected) DiagGreen else MaterialTheme.colorScheme.primary),
+                modifier = Modifier.fillMaxWidth().padding(top = 14.dp)
+            ) { Text(connectLabel) }
             Row(Modifier.fillMaxWidth().padding(top = 12.dp)) {
                 Text(obdValuesText, color = MaterialTheme.colorScheme.onBackground, fontSize = 18.sp, modifier = Modifier.weight(1f))
                 Column(Modifier.weight(1f).padding(start = 12.dp)) {
@@ -572,7 +611,17 @@ private fun MainScreen(
                 }
             }
             Button(onClick = onToggleRecord, enabled = carEnabled, modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) { Text(if (recording) "ОСТАНОВИТЬ ЗАПИСЬ" else "НАЧАТЬ ЗАПИСЬ") }
-            Text(recordStatusText, color = DiagLightGray, fontSize = 16.sp, modifier = Modifier.padding(top = 10.dp, bottom = 16.dp))
+            LinearProgressIndicator(
+                progress = { recordElapsedSec.coerceIn(0, 300) / 300f },
+                color = DiagRed,
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp)
+            )
+            Text(
+                if (recording) "Запись: ${formatDuration(recordElapsedSec)} / 5:00" else recordStatusText,
+                color = DiagLightGray,
+                fontSize = 16.sp,
+                modifier = Modifier.padding(top = 8.dp, bottom = 16.dp)
+            )
 
             if (showObdLog) {
                 HorizontalDivider(color = DiagGray)
@@ -653,6 +702,7 @@ private fun ObdDevicesDialog(devices: List<TargetElm327Ble.DeviceInfo>, onSelect
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun HistoryDialog(carTitle: String, records: List<DiagnosticRecordStore.Record>, onSendAi: (DiagnosticRecordStore.Record) -> Unit, onOpenDiagnostic: (DiagnosticRecordStore.Record) -> Unit, onOpenPdf: (DiagnosticRecordStore.Record) -> Unit, onDelete: (DiagnosticRecordStore.Record) -> Unit, onClose: () -> Unit) {
     val dateFormat = remember { SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()) }
@@ -664,25 +714,41 @@ private fun HistoryDialog(carTitle: String, records: List<DiagnosticRecordStore.
                 if (records.isEmpty()) Text("Диагностик пока нет.")
                 records.forEach { record ->
                     Text("${dateFormat.format(Date(record.createdAt))}\n${record.sessionName}\n${record.complaint.ifBlank { "Жалоба не указана" }}")
-                    Text(
-                        when { record.aiResponseUri != null -> "ИИ: заключение получено"; record.aiSent -> "ИИ: ответ ожидается"; else -> "ИИ: не отправлено" },
-                        modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
-                    )
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        if (!record.aiSent) TextButton(onClick = { onSendAi(record) }) { Text("Отправить ИИ") }
-                        if (record.aiSent && record.diagnosticId != null) TextButton(onClick = { onOpenDiagnostic(record) }) { Text("Открыть диагностику") }
-                        if (record.aiResponseUri != null) TextButton(onClick = { onOpenPdf(record) }) { Text("Открыть PDF") }
-                        Spacer(Modifier.weight(1f))
-                        IconButton(onClick = { onDelete(record) }) {
-                            Icon(Icons.Filled.Delete, contentDescription = "Удалить", tint = DiagRed)
-                        }
+                    Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            when { record.aiResponseUri != null -> "ИИ: заключение получено"; record.aiSent -> "ИИ: ответ ожидается"; else -> "ИИ: не отправлено" },
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilledIconButton(
+                            onClick = { onDelete(record) },
+                            colors = IconButtonDefaults.filledIconButtonColors(containerColor = DiagButtonGray)
+                        ) { Icon(Icons.Filled.Delete, contentDescription = "Удалить", tint = DiagRed) }
+                    }
+                    FlowRow(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (!record.aiSent) HistoryActionButton("Отправить ИИ") { onSendAi(record) }
+                        if (record.aiSent && record.diagnosticId != null) HistoryActionButton("Открыть диагностику") { onOpenDiagnostic(record) }
+                        if (record.aiResponseUri != null) HistoryActionButton("PDF") { onOpenPdf(record) }
                     }
                     Spacer(Modifier.height(16.dp))
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onClose) { Text("Закрыть") } }
+        confirmButton = {
+            Button(
+                onClick = onClose,
+                colors = ButtonDefaults.buttonColors(containerColor = DiagButtonGray, contentColor = DiagRed)
+            ) { Text("Закрыть") }
+        }
     )
+}
+
+@Composable
+private fun HistoryActionButton(text: String, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        colors = ButtonDefaults.buttonColors(containerColor = DiagButtonGray, contentColor = DiagRed),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+    ) { Text(text, fontSize = 14.sp) }
 }
 
 @Composable

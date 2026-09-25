@@ -331,7 +331,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	answer, err := s.ds.Chat(r.Context(), []ChatMessage{
 		{Role: "system", Content: followUpPrompt},
 		{Role: "user", Content: fmt.Sprintf("Заключение:\n%s\nИстория:\n%s\nНовое сообщение владельца:\n%s", st.Conclusion, sb.String(), text)},
-	})
+	}, false)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

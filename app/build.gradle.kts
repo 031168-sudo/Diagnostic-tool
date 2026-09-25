@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.diagnostictool"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
         val diagnosticApiUrl = (project.findProperty("diagnosticApiUrl") as String?)?.trim() ?: ""
         buildConfigField("String", "DIAGNOSTIC_API_URL", "\"${diagnosticApiUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         val diagnosticApiToken = (project.findProperty("diagnosticApiToken") as String?)?.trim() ?: ""

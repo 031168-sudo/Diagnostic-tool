@@ -21,37 +21,42 @@ class ConclusionPdfRenderer(private val pageWidth: Int = 595, private val pageHe
     private var sectionNo = 0
 
     private val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textSize = 18f
+        textSize = 20f
         typeface = Typeface.create("sans-serif", Typeface.BOLD)
         color = Color.rgb(20, 20, 20)
         textAlign = Paint.Align.CENTER
         letterSpacing = 0.03f
     }
     private val subtitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textSize = 11f
-        typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-        color = Color.rgb(90, 90, 90)
+        textSize = 11.5f
+        typeface = Typeface.create("serif", Typeface.NORMAL)
+        color = Color.rgb(70, 70, 70)
         textAlign = Paint.Align.CENTER
     }
     private val headingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textSize = 13.5f
+        textSize = 14f
         typeface = Typeface.create("sans-serif", Typeface.BOLD)
         color = Color.rgb(15, 15, 15)
     }
     private val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textSize = 11f
-        typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+        textSize = 11.5f
+        typeface = Typeface.create("serif", Typeface.NORMAL)
         color = Color.rgb(30, 30, 30)
     }
     private val tablePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        textSize = 10.5f
-        typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+        textSize = 11f
+        typeface = Typeface.create("serif", Typeface.NORMAL)
         color = Color.rgb(30, 30, 30)
     }
     private val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textSize = 11.5f
-        typeface = Typeface.create("sans-serif", Typeface.BOLD)
+        typeface = Typeface.create("serif", Typeface.BOLD)
         color = Color.rgb(40, 40, 40)
+    }
+    private val disclaimerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 9.5f
+        typeface = Typeface.create("serif", Typeface.ITALIC)
+        color = Color.rgb(110, 110, 110)
     }
     private val gridPaint = Paint().apply {
         color = gridColor
@@ -61,6 +66,7 @@ class ConclusionPdfRenderer(private val pageWidth: Int = 595, private val pageHe
 
     private val bodyLine = lineHeight(bodyPaint)
     private val tableLine = lineHeight(tablePaint)
+    private val disclaimerLine = lineHeight(disclaimerPaint)
 
     fun render(root: JSONObject): PdfDocument {
         newPage()
@@ -157,6 +163,12 @@ class ConclusionPdfRenderer(private val pageWidth: Int = 595, private val pageHe
         if (limitation.isNotBlank()) {
             section("Ограничение заключения")
             paragraph(limitation, bodyPaint, bodyLine)
+        }
+
+        val disclaimer = root.optString("disclaimer")
+        if (disclaimer.isNotBlank()) {
+            section("Правовая информация")
+            paragraph(disclaimer, disclaimerPaint, disclaimerLine)
         }
 
         finishPage()
