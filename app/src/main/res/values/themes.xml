@@ -1,0 +1,13 @@
+<resources>
+    <style name="Theme.DiagnosticTool" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">@color/diag_black</item>
+        <item name="android:navigationBarColor">@color/diag_black</item>
+        <item name="android:windowBackground">@color/diag_black</item>
+        <item name="colorPrimary">@color/diag_red</item>
+        <item name="colorOnPrimary">@color/diag_white</item>
+        <item name="colorSecondary">@color/diag_red</item>
+        <item name="colorOnSecondary">@color/diag_white</item>
+    </style>
+</resources>
