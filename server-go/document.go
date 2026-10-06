@@ -38,6 +38,7 @@ type ConclusionDoc struct {
 	Results     []string    `json:"results"`
 	Errors      []ErrorItem `json:"errors"`
 	ErrorsNote  string      `json:"errorsNote"`
+	ServiceNote string      `json:"serviceNote"`
 	Conclusion  string      `json:"conclusion"`
 	Priority    string      `json:"priority"`
 	Recommended string      `json:"recommended"`
@@ -53,10 +54,11 @@ type docPart struct {
 	Results     []string    `json:"results"`
 	Errors      []ErrorItem `json:"errors"`
 	ErrorsNote  string      `json:"errorsNote"`
+	ServiceNote string      `json:"serviceNote"`
 	Conclusion  string      `json:"conclusion"`
-	Priority    string   `json:"priority"`
-	Recommended string   `json:"recommended"`
-	Limitation  string   `json:"limitation"`
+	Priority    string      `json:"priority"`
+	Recommended string      `json:"recommended"`
+	Limitation  string      `json:"limitation"`
 }
 
 type carInfo struct {
@@ -92,6 +94,7 @@ func buildConclusionDoc(st *SessionState, metrics WavMetrics, part docPart) *Con
 		Results:     cleanList(part.Results),
 		Errors:      cleanErrors(part.Errors),
 		ErrorsNote:  strings.TrimSpace(part.ErrorsNote),
+		ServiceNote: strings.TrimSpace(part.ServiceNote),
 		Conclusion:  strings.TrimSpace(part.Conclusion),
 		Priority:    strings.TrimSpace(part.Priority),
 		Recommended: strings.TrimSpace(part.Recommended),

@@ -95,6 +95,8 @@ func main() {
 	mux.Handle("POST /v1/diagnostics/{id}/messages", srv.protect(http.HandlerFunc(srv.handleMessages)))
 	mux.Handle("POST /v1/diagnostics/{id}/chat", srv.protect(http.HandlerFunc(srv.handleChat)))
 	mux.Handle("GET /v1/diagnostics/{id}/conclusion.txt", srv.protect(http.HandlerFunc(srv.handleConclusion)))
+	mux.Handle("POST /v1/diagnostics/{id}/finalize", srv.protect(http.HandlerFunc(srv.handleFinalize)))
+	mux.Handle("POST /v1/diagnostics/{id}/retry", srv.protect(http.HandlerFunc(srv.handleRetry)))
 	mux.Handle("GET /v1/vin/{vin}", srv.protect(http.HandlerFunc(srv.handleVIN)))
 	srv.startLimiterCleanup()
 
@@ -330,7 +332,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	answer, err := s.ds.Chat(r.Context(), []ChatMessage{
 		{Role: "system", Content: followUpPrompt},
-		{Role: "user", Content: fmt.Sprintf("Заключение:\n%s\nИстория:\n%s\nНовое сообщение владельца:\n%s", st.Conclusion, sb.String(), text)},
+		{Role: "user", Content: fmt.Sprintf("Данные о движении:\n%s\n\nЗаключение:\n%s\nИстория:\n%s\nНовое сообщение владельца:\n%s", orDefault(st.Facts, "нет данных"), st.Conclusion, sb.String(), text)},
 	}, false)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -346,6 +348,101 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	})
 
 	writeJSON(w, http.StatusOK, map[string]string{"answer": answer})
+}
+
+func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
+	if !s.ds.Enabled() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "DEEPSEEK_API_KEY не настроен на сервере"})
+		return
+	}
+	id := r.PathValue("id")
+	st, err := s.store.Load(id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	if len(st.Files) == 0 {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "Файлы сессии не найдены"})
+		return
+	}
+	s.store.Update(id, func(st *SessionState) {
+		st.State = "processing"
+		st.Stage = "Повторный анализ"
+		st.Message = "Перезапускаю анализ…"
+		st.UpdatedAt = now()
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	go s.runAnalysis(id, "")
+}
+
+func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
+	if !s.ds.Enabled() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "DEEPSEEK_API_KEY не настроен на сервере"})
+		return
+	}
+	id := r.PathValue("id")
+	st, err := s.store.Load(id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	if st.Conclusion == "" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "Заключение ещё не готово"})
+		return
+	}
+
+	var sb strings.Builder
+	for _, h := range st.History {
+		sb.WriteString(h.Role)
+		sb.WriteString(": ")
+		sb.WriteString(h.Text)
+		sb.WriteByte('\n')
+	}
+
+	metrics := WavMetrics{}
+	for _, f := range st.Files {
+		if f.Name == "audio.wav" {
+			if b, e := os.ReadFile(f.Path); e == nil {
+				metrics = wavMetrics(b)
+			}
+			break
+		}
+	}
+
+	prompt := fmt.Sprintf("Данные о движении:\n%s\n\nТекущее заключение:\n%s\n\nДиалог с владельцем:\n%s\n\nОбнови итоговое заключение с учётом диалога и верни JSON по заданной схеме.",
+		orDefault(st.Facts, "нет данных"), st.Conclusion, orDefault(sb.String(), "диалога не было"))
+
+	answer, err := s.ds.Chat(r.Context(), []ChatMessage{
+		{Role: "system", Content: finalizePrompt},
+		{Role: "user", Content: prompt},
+	}, true)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	result, err := parseModelJSON(answer)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	doc := buildConclusionDoc(st, metrics, result.Document)
+	if doc.Conclusion == "" {
+		doc.Conclusion = result.Conclusion
+	}
+	s.store.Update(id, func(st *SessionState) {
+		st.Document = doc
+		if result.Conclusion != "" {
+			st.Conclusion = result.Conclusion
+		}
+		st.UpdatedAt = now()
+	})
+	st2, err := s.store.Load(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, st2.Public())
 }
 
 func (s *Server) handleConclusion(w http.ResponseWriter, r *http.Request) {

@@ -15,8 +15,10 @@ import (
 
 const systemPrompt = `Ты — автомобильный диагност приложения Alfa Diagnostic. Анализируй только предоставленные данные, отделяй факт от гипотезы и пиши кратко и ясно, как опытный мастер. Сопоставляй аудио, OBD, GPS и датчики по общей временной шкале. Не утверждай неисправность конкретной детали, если данные её не доказывают. Если для различения причин нужен простой тест или вопрос владельцу — задай его.
 
+Обязательно учитывай движение автомобиля: если скорость по OBD и GPS отсутствует или равна нулю — автомобиль стоит на месте; в этом случае не делай выводов о разгоне, движении под нагрузкой или дорожных шумах, а анализируй режим на месте (холостой ход). Опирайся на раздел «Движение» и не противоречь ему.
+
 Отвечай СТРОГО одним JSON-объектом без markdown:
-{"state":"question|completed","stage":"...","message":"...","question":"...","options":["..."],"conclusion":"...","document":{"complaint":"...","analysis":"...","results":["..."],"errors":[{"code":"...","meaning":"...","cause":"...","remedy":"..."}],"errorsNote":"...","conclusion":"...","priority":"...","recommended":"...","limitation":"..."}}
+{"state":"question|completed","stage":"...","message":"...","question":"...","options":["..."],"conclusion":"...","document":{"complaint":"...","analysis":"...","results":["..."],"errors":[{"code":"...","meaning":"...","cause":"...","remedy":"..."}],"errorsNote":"...","serviceNote":"...","conclusion":"...","priority":"...","recommended":"...","limitation":"..."}}
 Для question поля conclusion и document пустые/отсутствуют. Для completed question пустое.
 
 Стиль: коротко, по делу, без воды и повторений, без перечисления всех числовых значений — только ключевые. Пиши так, чтобы было понятно владельцу и полезно мастеру.
@@ -27,6 +29,7 @@ const systemPrompt = `Ты — автомобильный диагност пр�
 - results — 4–6 пунктов: только значимые наблюдения (частотные характеристики звука, его связь с нагрузкой и оборотами, что исключено);
 - errors — разбор каждого кода DTC: code, meaning, cause, remedy;
 - errorsNote — связаны ли выявленные коды с акустической жалобой. Если связаны — объясни как; если нет — прямо скажи, что не связаны. Если кодов нет — напиши, что коды не обнаружены;
+- serviceNote — связь жалобы и кодов с технической историей (сервисной книжкой). Если жалоба или коды объясняются записями журнала — прямо укажи это с датой/пробегом (например: «скрип сзади, а в журнале замена задних тормозных дисков и колодок N км назад — вероятно связано»; «ошибка по лямбде, а в журнале указано удаление катализатора»). Если связи нет или журнал пуст — оставь пусто;
 - conclusion — наиболее вероятная группа причин, 2–3 предложения;
 - priority — что проверить в первую очередь, одной строкой;
 - recommended — как и где проверять автомобиль, 2–3 предложения;
@@ -34,7 +37,10 @@ const systemPrompt = `Ты — автомобильный диагност пр�
 Если коды связаны с посторонними звуками — учти их в анализе и заключении.
 Поле conclusion продублируй связным текстом заключения для чата.`
 
-const followUpPrompt = `Ты продолжаешь диалог по автомобильной диагностике. Отвечай по имеющимся данным, не придумывай измерения и чётко отделяй факт от предположения.`
+const followUpPrompt = `Ты продолжаешь диалог по автомобильной диагностике. Отвечай по имеющимся данным, не придумывай измерения и чётко отделяй факт от предположения. Учитывай данные о движении: если скорость отсутствует или равна нулю — автомобиль стоит на месте, не выдумывай разгон и движение.`
+
+const finalizePrompt = `Ты обновляешь итоговое диагностическое заключение с учётом диалога с владельцем. Учти всё, что обсуждалось в диалоге, и построй итоговое заключение именно по этим дискуссиям и данным. Не противоречь данным о движении. Верни СТРОГО одним JSON-объектом без markdown:
+{"state":"completed","stage":"...","message":"...","question":"","options":[],"conclusion":"...","document":{"complaint":"...","analysis":"...","results":["..."],"errors":[{"code":"...","meaning":"...","cause":"...","remedy":"..."}],"errorsNote":"...","conclusion":"...","priority":"...","recommended":"...","limitation":"..."}}`
 
 const maxPromptChars = 300000
 
@@ -139,6 +145,43 @@ func stripHashLines(s string) string {
 		out = append(out, line)
 	}
 	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func maxOf(t *table, cols ...string) (float64, bool) {
+	if t == nil {
+		return 0, false
+	}
+	ci := t.findCol(cols...)
+	if ci < 0 || !t.valid[ci] {
+		return 0, false
+	}
+	mx := math.Inf(-1)
+	ok := false
+	for _, v := range t.column(ci) {
+		if math.IsNaN(v) {
+			continue
+		}
+		if v > mx {
+			mx = v
+			ok = true
+		}
+	}
+	return mx, ok
+}
+
+func movementText(obd, gps *table) string {
+	var parts []string
+	if v, ok := maxOf(obd, "speed"); ok {
+		parts = append(parts, fmt.Sprintf("OBD-скорость: максимум %.0f км/ч", v))
+	} else {
+		parts = append(parts, "OBD-скорость: данных нет")
+	}
+	if v, ok := maxOf(gps, "speed"); ok {
+		parts = append(parts, fmt.Sprintf("GPS-скорость: максимум %.0f км/ч", v))
+	} else {
+		parts = append(parts, "GPS-скорость: данных нет")
+	}
+	return strings.Join(parts, "; ") + ". Если скорость отсутствует или равна нулю — автомобиль стоит на месте."
 }
 
 func summarizeTable(name string, t *table, err error) string {
@@ -260,6 +303,7 @@ func (s *Server) runAnalysis(id, extra string) {
 	gpsRaw := readTextIfExists(filepath.Join(dir, "gps.csv"), 16<<20)
 	sensorsRaw := readTextIfExists(filepath.Join(dir, "sensors.csv"), 64<<20)
 	errorsText := stripHashLines(readTextIfExists(filepath.Join(dir, "errors.txt"), 100_000))
+	journalText := strings.TrimSpace(readTextIfExists(filepath.Join(dir, "journal.json"), 200_000))
 
 	obdTable, obdErr := parseTable(obdRaw)
 	gpsTable, gpsErr := parseTable(gpsRaw)
@@ -313,6 +357,7 @@ func (s *Server) runAnalysis(id, extra string) {
 	sensorsSum := summarizeTable("SENSORS", sensorsTable, sensorsErr)
 	corr := audioCorrelations(audioRMS, obdTable, sensorsTable, gpsTable)
 	spectrum := audioSpectrumText(audioBytes, obdTable)
+	movement := movementText(obdTable, gpsTable)
 
 	prompt := fmt.Sprintf(`Данные автомобиля:
 %s
@@ -321,6 +366,9 @@ func (s *Server) runAnalysis(id, extra string) {
 %s
 
 Сессия:
+%s
+
+Движение:
 %s
 
 Аудио-метрики:
@@ -350,6 +398,9 @@ func (s *Server) runAnalysis(id, extra string) {
 Считанные коды неисправностей (DTC):
 %s
 
+Техническая история автомобиля (сервисная книжка, JSON):
+%s
+
 Дополнительный ответ владельца:
 %s
 
@@ -359,6 +410,7 @@ func (s *Server) runAnalysis(id, extra string) {
 		st.Car,
 		orDefault(st.Complaint, "не указана"),
 		session,
+		movement,
 		metricsJSON,
 		audioTimelineText(audioRMS),
 		orDefault(spectrum, "недостаточно данных"),
@@ -368,6 +420,7 @@ func (s *Server) runAnalysis(id, extra string) {
 		gpsSum,
 		sensorsSum,
 		orDefault(errorsText, "нет данных"),
+		orDefault(journalText, "нет данных"),
 		orDefault(extra, "нет"),
 	)
 
@@ -392,6 +445,7 @@ func (s *Server) runAnalysis(id, extra string) {
 
 	result, err := parseModelJSON(answer)
 	if err != nil {
+		log.Printf("analysis %s: ответ не JSON (%v), %d символов: %s", id, err, len(answer), truncateForLog(answer, 400))
 		retryMessages := append(messages,
 			ChatMessage{Role: "assistant", Content: answer},
 			ChatMessage{Role: "user", Content: "Твой ответ не является корректным JSON. Верни ТОЛЬКО валидный JSON-объект по заданной схеме, без markdown и пояснений."},
@@ -403,7 +457,8 @@ func (s *Server) runAnalysis(id, extra string) {
 		}
 		result, err = parseModelJSON(answer)
 		if err != nil {
-			s.fail(id, err)
+			log.Printf("analysis %s: повторный ответ не JSON (%v), %d символов: %s", id, err, len(answer), truncateForLog(answer, 400))
+			s.completeFallback(id, st, metrics, answer)
 			return
 		}
 	}
@@ -426,6 +481,7 @@ func (s *Server) runAnalysis(id, extra string) {
 			st.Options = []string{}
 		}
 		st.Conclusion = result.Conclusion
+		st.Facts = movement
 		if doc != nil {
 			st.Document = doc
 		}
@@ -435,6 +491,35 @@ func (s *Server) runAnalysis(id, extra string) {
 		}
 		st.History = append(st.History,
 			HistoryItem{Role: "user", Text: entry},
+			HistoryItem{Role: "assistant", Text: answer},
+		)
+		st.UpdatedAt = now()
+	})
+}
+
+func truncateForLog(s string, max int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
+}
+
+func (s *Server) completeFallback(id string, st *SessionState, metrics WavMetrics, answer string) {
+	text := strings.TrimSpace(answer)
+	if text == "" {
+		text = "Не удалось сформировать заключение."
+	}
+	doc := buildConclusionDoc(st, metrics, docPart{Complaint: st.Complaint, Conclusion: text})
+	doc.Conclusion = text
+	s.store.Update(id, func(st *SessionState) {
+		st.State = "completed"
+		st.Stage = "Анализ"
+		st.Message = "Заключение сформировано"
+		st.Conclusion = text
+		st.Document = doc
+		st.History = append(st.History,
+			HistoryItem{Role: "user", Text: "initial"},
 			HistoryItem{Role: "assistant", Text: answer},
 		)
 		st.UpdatedAt = now()

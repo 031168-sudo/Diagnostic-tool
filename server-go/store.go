@@ -33,6 +33,7 @@ type SessionState struct {
 	Options     []string      `json:"options"`
 	Conclusion  string         `json:"conclusion"`
 	Document    *ConclusionDoc `json:"document,omitempty"`
+	Facts       string         `json:"facts,omitempty"`
 	Car         string         `json:"car"`
 	Complaint   string         `json:"complaint"`
 	SessionName string         `json:"sessionName"`

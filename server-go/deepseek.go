@@ -39,9 +39,10 @@ func (d *DeepSeek) Enabled() bool {
 
 func (d *DeepSeek) Chat(ctx context.Context, messages []ChatMessage, jsonMode bool) (string, error) {
 	body := map[string]any{
-		"model":    d.model,
-		"messages": messages,
-		"stream":   false,
+		"model":      d.model,
+		"messages":   messages,
+		"stream":     false,
+		"max_tokens": 8192,
 	}
 	if jsonMode {
 		body["response_format"] = map[string]string{"type": "json_object"}
