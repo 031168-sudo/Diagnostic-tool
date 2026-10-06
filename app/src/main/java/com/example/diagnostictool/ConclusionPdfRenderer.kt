@@ -142,6 +142,12 @@ class ConclusionPdfRenderer(private val pageWidth: Int = 595, private val pageHe
             }
         }
 
+        val serviceNote = root.optString("serviceNote")
+        if (serviceNote.isNotBlank()) {
+            numbered("Связь с сервисной книжкой")
+            paragraph(serviceNote, bodyPaint, bodyLine)
+        }
+
         val conclusion = root.optString("conclusion")
         val priority = root.optString("priority")
         if (conclusion.isNotBlank() || priority.isNotBlank()) {

@@ -18,6 +18,11 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -42,6 +47,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -54,6 +60,7 @@ import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -75,6 +82,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -89,11 +97,13 @@ import com.example.diagnostictool.ui.theme.DiagGray
 import com.example.diagnostictool.ui.theme.DiagGreen
 import com.example.diagnostictool.ui.theme.DiagLightGray
 import com.example.diagnostictool.ui.theme.DiagRed
+import com.example.diagnostictool.ui.theme.DiagWhite
 import com.example.diagnostictool.ui.theme.DiagnosticTheme
+import org.json.JSONArray
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.io.File
 import kotlinx.coroutines.launch
 
 private const val OBD_DISCONNECTED_TEXT = "OBD-адаптер не подключен"
@@ -101,10 +111,76 @@ private const val OBD_DISCONNECTED_TEXT = "OBD-адаптер не подклю�
 private fun formatDuration(totalSec: Int): String = "%d:%02d".format(totalSec / 60, totalSec % 60)
 
 class AlfaMainActivity : ComponentActivity() {
-    private lateinit var obd: TargetElm327Ble
+    private lateinit var ble: TargetElm327Ble
+    private val spp by lazy { SppObd(this, obdListener) }
+    private val wifi by lazy { WifiObd(this, obdListener) }
+    private var activeKind by mutableStateOf("")
+    private var pendingName = ""
+    private var pendingAddr = ""
+    private var savedAdapter by mutableStateOf("")
+    private var obdBusy by mutableStateOf(false)
+    private var obdBusyText by mutableStateOf("")
+    private val obdBusyHandler = Handler(Looper.getMainLooper())
+    private val obdBusyTimeout = Runnable {
+        obdBusy = false
+        statusText = "Не удалось подключиться"
+        Toast.makeText(this@AlfaMainActivity, "Не удалось подключиться", Toast.LENGTH_LONG).show()
+    }
+
+    private fun startObdBusy(text: String, timeoutMs: Long) {
+        obdBusyText = text
+        obdBusy = true
+        obdBusyHandler.removeCallbacks(obdBusyTimeout)
+        obdBusyHandler.postDelayed(obdBusyTimeout, timeoutMs)
+    }
+
+    private fun stopObdBusy() {
+        obdBusy = false
+        obdBusyHandler.removeCallbacks(obdBusyTimeout)
+    }
+    private val obdListener = object : ObdListener {
+        override fun onState(text: String) {
+            runOnUiThread {
+                statusText = text
+                appendLog("• $text")
+                if (text.contains("не найдены") || text.contains("выключен") || text.contains("Ошибка BLE")) scanCount = null
+                if (text.contains("ELM327") && text.contains("готов")) recorder?.setObdActive(true)
+                if (text.contains("отключён", true)) recorder?.setObdActive(false)
+            }
+        }
+        override fun onData(values: ObdValues, monotonicNs: Long) {
+            runOnUiThread { obdValuesText = values.toDisplay() }
+            recorder?.onObd(values, monotonicNs)
+        }
+        override fun onDevices(devices: List<ObdDevice>) = runOnUiThread { stopObdBusy(); scanCount = null; obdListHint = ""; obdDevices = devices }
+        override fun onErrors(codes: List<String>, raw: String) = runOnUiThread { errorCodes = codes; errorRaw = raw }
+        override fun onLog(line: String) = runOnUiThread { appendLog(line) }
+        override fun onScanning(found: Int) = runOnUiThread { scanCount = found }
+        override fun onConnected(connected: Boolean) = runOnUiThread {
+            val wasBusy = obdBusy
+            stopObdBusy()
+            obdConnected = connected
+            if (connected) {
+                scanCount = null; showObdLog = true
+                Toast.makeText(this@AlfaMainActivity, "Подключено: ${pendingName.ifBlank { "OBD" }}", Toast.LENGTH_SHORT).show()
+                if (activeKind.isNotBlank() && pendingAddr.isNotBlank()) {
+                    settingsPrefs.edit()
+                        .putString("last_kind", activeKind)
+                        .putString("last_name", pendingName)
+                        .putString("last_addr", pendingAddr)
+                        .apply()
+                    refreshSavedAdapter()
+                }
+            } else if (wasBusy) {
+                statusText = "Не удалось подключиться"
+                Toast.makeText(this@AlfaMainActivity, "Не удалось подключиться", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
     private var recorder: PublicSessionRecorder? = null
     private val carStore by lazy { CarStore(this) }
     private val recordStore by lazy { DiagnosticRecordStore(this) }
+    private val serviceStore by lazy { ServiceStore(this) }
     private var lastSessionUris: List<Uri> = emptyList()
     private val obdPermissionRequest = 10
     private val recordPermissionRequest = 11
@@ -137,21 +213,30 @@ class AlfaMainActivity : ComponentActivity() {
     private var showRecordWarning by mutableStateOf(false)
     private var recordWarningNoShow by mutableStateOf(false)
     private var showWelcome by mutableStateOf(false)
+    private var helpOpen by mutableStateOf(false)
+    private var serviceBookOpen by mutableStateOf(false)
+    private var serviceEditor by mutableStateOf<ServiceEntry?>(null)
+    private var serviceVersion by mutableStateOf(0)
     private val settingsPrefs by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
 
     private var firstCarDialog by mutableStateOf(false)
     private var carsDialog by mutableStateOf(false)
     private var carEditor by mutableStateOf<CarEditorState?>(null)
-    private var obdDevices by mutableStateOf<List<TargetElm327Ble.DeviceInfo>?>(null)
+    private var obdDevices by mutableStateOf<List<ObdDevice>?>(null)
+    private var obdListHint by mutableStateOf("")
+    private var connectChooser by mutableStateOf(false)
+    private var wifiDialog by mutableStateOf(false)
     private var historyDialog by mutableStateOf(false)
     private var historyVersion by mutableStateOf(0)
     private var deleteRecord by mutableStateOf<DiagnosticRecordStore.Record?>(null)
     private var postRecordDialog by mutableStateOf<PostRecordState?>(null)
+    private var historicalComplaint by mutableStateOf<HistoricalComplaintState?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         configureObd()
+        refreshSavedAdapter()
         appendLog("Файл журнала: ${liveLog.displayPath()}")
         setContent {
             DiagnosticTheme {
@@ -168,12 +253,14 @@ class AlfaMainActivity : ComponentActivity() {
                         onChangeCar = { showCarsDialog() },
                         onAddCar = { showCarEditor(carStore.create(), true) },
                         onHistory = { showHistory() },
-                        connectLabel = when {
-                            obdConnected -> "Отключить"
-                            scanCount != null -> "Доступные устройства: $scanCount"
-                            else -> "Подключить ELM327"
-                        },
-                        onConnect = { if (obdConnected) obd.disconnect() else requestObd() },
+                        onHelp = { helpOpen = true },
+                        onServiceBook = { serviceBookOpen = true },
+                        savedLabel = savedAdapter,
+                        obdBusy = obdBusy,
+                        obdBusyText = obdBusyText,
+                        onDisconnect = { disconnectObd() },
+                        onConnectSaved = { connectSaved() },
+                        onChooseNew = { resetObdData(); connectChooser = true },
                         onToggleRecord = { toggleRecording() },
                         obdLog = obdLog,
                         showObdLog = showObdLog,
@@ -190,11 +277,44 @@ class AlfaMainActivity : ComponentActivity() {
                         )
                     }
 
-                    if (showWelcome) WelcomeScreen(onDismiss = {
-                        settingsPrefs.edit().putBoolean("welcome_shown", true).apply()
-                        showWelcome = false
-                        enterCarFlow()
+                    if (showWelcome) WelcomeScreen(
+                        onDismiss = {
+                            settingsPrefs.edit().putBoolean("welcome_shown", true).apply()
+                            showWelcome = false
+                            enterCarFlow()
+                        },
+                        onHelp = { helpOpen = true }
+                    )
+
+                    if (helpOpen) HelpScreen(onClose = {
+                        helpOpen = false
+                        if (showWelcome) {
+                            settingsPrefs.edit().putBoolean("welcome_shown", true).apply()
+                            showWelcome = false
+                            enterCarFlow()
+                        }
                     })
+
+                    if (serviceBookOpen) currentCar?.let { car ->
+                        val entries = remember(serviceVersion, car.id) { serviceStore.forCar(car.id) }
+                        ServiceBookScreen(
+                            car = car,
+                            entries = entries,
+                            hints = remember(serviceVersion, car.id) { serviceStore.hints(car, entries) },
+                            onAdd = { serviceEditor = serviceStore.create(car.id) },
+                            onEdit = { e -> serviceEditor = e },
+                            onDelete = { e -> serviceStore.delete(e.id); serviceVersion++ },
+                            onBack = { serviceBookOpen = false }
+                        )
+                    }
+
+                    serviceEditor?.let { entry ->
+                        ServiceEntryDialog(
+                            entry = entry,
+                            onSave = { serviceStore.save(it); serviceVersion++; serviceEditor = null },
+                            onDismiss = { serviceEditor = null }
+                        )
+                    }
                 }
 
                 if (firstCarDialog) FirstCarDialog(onAdd = { firstCarDialog = false; showCarEditor(carStore.create(), true) })
@@ -208,8 +328,46 @@ class AlfaMainActivity : ComponentActivity() {
                 )
 
                 obdDevices?.let { devices ->
-                    ObdDevicesDialog(devices = devices, onSelect = { d -> settingsPrefs.edit().putString("last_obd", d.address).apply(); obd.connect(d.device); obdDevices = null }, onClose = { obdDevices = null; statusText = OBD_DISCONNECTED_TEXT })
+                    ObdDevicesDialog(devices = devices, hint = obdListHint, onSelect = { d ->
+                        settingsPrefs.edit().putString("last_obd", d.address).apply()
+                        val bt = d.btDevice
+                        if (bt != null) {
+                            resetObdData()
+                            pendingName = d.title(); pendingAddr = d.address
+                            startObdBusy("Подключение…", 20000)
+                            if (d.kind == ObdDevice.Kind.BLE) { activeKind = "ble"; ble.connect(bt) }
+                            else { activeKind = "spp"; spp.connect(bt) }
+                        }
+                        obdDevices = null
+                    }, onClose = { obdDevices = null; statusText = OBD_DISCONNECTED_TEXT })
                 }
+
+                if (connectChooser) ConnectChooserDialog(
+                    onBle = { connectChooser = false; requestObd() },
+                    onSpp = {
+                        connectChooser = false
+                        obdListHint = "Если вашего адаптера нет в списке — сначала сопрягите его в настройках Bluetooth телефона, затем вернитесь сюда."
+                        obdDevices = spp.bondedDevices()
+                    },
+                    onWifi = { connectChooser = false; wifiDialog = true },
+                    onCancel = { connectChooser = false }
+                )
+
+                if (wifiDialog) WifiDialog(
+                    initial = settingsPrefs.getString("last_wifi", "192.168.0.10") ?: "192.168.0.10",
+                    onConnect = { input ->
+                        val host = input.substringBefore(":").trim()
+                        val port = input.substringAfter(":", "").trim().toIntOrNull() ?: 35000
+                        settingsPrefs.edit().putString("last_wifi", input).apply()
+                        wifiDialog = false
+                        activeKind = "wifi"
+                        resetObdData()
+                        pendingName = input; pendingAddr = input
+                        startObdBusy("Подключение…", 20000)
+                        wifi.connect(host, port)
+                    },
+                    onCancel = { wifiDialog = false }
+                )
 
                 if (historyDialog) currentCar?.let { car ->
                     HistoryDialog(
@@ -231,6 +389,19 @@ class AlfaMainActivity : ComponentActivity() {
 
                 postRecordDialog?.let { state ->
                     PostRecordDialog(state = state, onClose = { closePostRecord(state) }, onStartAi = { startAiFromPostRecord(state) })
+                }
+
+                historicalComplaint?.let { state ->
+                    HistoricalComplaintDialog(
+                        state = state,
+                        onSend = {
+                            val c = state.complaint.trim()
+                            recordStore.setComplaint(state.record.sessionName, c)
+                            historicalComplaint = null
+                            doHistoricalUpload(state.car, state.record, c)
+                        },
+                        onCancel = { historicalComplaint = null }
+                    )
                 }
 
                 if (showRecordWarning) RecordWarningDialog(
@@ -263,6 +434,13 @@ class AlfaMainActivity : ComponentActivity() {
 
     fun currentErrorCodes(): List<String> = errorCodes
     fun currentErrorRaw(): String = errorRaw
+
+    fun currentJournalJson(): String {
+        val car = currentCar ?: return "[]"
+        val arr = JSONArray()
+        serviceStore.forCar(car.id).forEach { arr.put(it.toJson()) }
+        return arr.toString()
+    }
 
     private fun appendLog(line: String) {
         val entry = "[${logTimeFormat.format(Date())}] $line"
@@ -309,31 +487,50 @@ class AlfaMainActivity : ComponentActivity() {
         checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
     private fun configureObd() {
-        if (::obd.isInitialized) obd.close()
-        obd = TargetElm327Ble(this, object : TargetElm327Ble.Listener {
-            override fun onState(text: String) {
-                runOnUiThread {
-                    statusText = text
-                    appendLog("• $text")
-                    if (text.contains("не найдены") || text.contains("выключен") || text.contains("Ошибка BLE")) scanCount = null
-                    if (text.contains("ELM327") && text.contains("готов")) recorder?.setObdActive(true)
-                    if (text.contains("отключён", true)) recorder?.setObdActive(false)
-                }
-            }
-            override fun onData(values: ObdValues, monotonicNs: Long) {
-                runOnUiThread { obdValuesText = values.toDisplay() }
-                recorder?.onObd(values, monotonicNs)
-            }
-            override fun onDevices(devices: List<TargetElm327Ble.DeviceInfo>) = runOnUiThread { scanCount = null; obdDevices = devices }
-            override fun onErrors(codes: List<String>, raw: String) = runOnUiThread { errorCodes = codes; errorRaw = raw }
-            override fun onLog(line: String) = runOnUiThread { appendLog(line) }
-            override fun onScanning(found: Int) = runOnUiThread { scanCount = found }
-            override fun onConnected(connected: Boolean) = runOnUiThread {
-                obdConnected = connected
-                if (connected) { scanCount = null; showObdLog = true }
-            }
-        })
+        if (::ble.isInitialized) ble.close()
+        ble = TargetElm327Ble(this, obdListener)
         statusText = OBD_DISCONNECTED_TEXT
+    }
+
+    private fun disconnectObd() {
+        when (activeKind) {
+            "spp" -> spp.disconnect()
+            "wifi" -> wifi.disconnect()
+            else -> ble.disconnect()
+        }
+        activeKind = ""
+    }
+
+    private fun resetObdData() {
+        obdValuesText = ObdValues().toDisplay()
+        errorCodes = emptyList()
+        errorRaw = ""
+    }
+
+    private fun refreshSavedAdapter() {
+        val kind = settingsPrefs.getString("last_kind", "") ?: ""
+        savedAdapter = if (kind.isBlank()) "" else
+            (settingsPrefs.getString("last_name", "") ?: "").ifBlank { settingsPrefs.getString("last_addr", "") ?: "" }
+    }
+
+    private fun connectSaved() {
+        val kind = settingsPrefs.getString("last_kind", "") ?: ""
+        val name = settingsPrefs.getString("last_name", "") ?: ""
+        val addr = settingsPrefs.getString("last_addr", "") ?: ""
+        if (kind.isBlank() || addr.isBlank()) { connectChooser = true; return }
+        resetObdData()
+        pendingName = name.ifBlank { addr }; pendingAddr = addr
+        startObdBusy("Подключение…", 20000)
+        when (kind) {
+            "spp" -> { activeKind = "spp"; spp.connectAddress(addr) }
+            "wifi" -> {
+                activeKind = "wifi"
+                val host = addr.substringBefore(":").trim()
+                val port = addr.substringAfter(":", "").trim().toIntOrNull() ?: 35000
+                wifi.connect(host, port)
+            }
+            else -> { activeKind = "ble"; configureObd(); ble.connectAddress(addr) }
+        }
     }
 
     private fun showCarsDialog() {
@@ -416,10 +613,18 @@ class AlfaMainActivity : ComponentActivity() {
     }
 
     private fun startHistoricalDiagnostic(car: Car, record: DiagnosticRecordStore.Record) {
+        if (record.complaint.isBlank()) {
+            historicalComplaint = HistoricalComplaintState(car, record)
+            return
+        }
+        doHistoricalUpload(car, record, record.complaint)
+    }
+
+    private fun doHistoricalUpload(car: Car, record: DiagnosticRecordStore.Record, complaint: String) {
         val stored = record.sessionUri?.let { runCatching { Uri.parse(it) }.getOrNull() }
         val uris = if (stored != null) listOf(stored) else findSessionUris(record.sessionName)
         if (uris.isEmpty()) { Toast.makeText(this, "Файлы этой сессии не найдены", Toast.LENGTH_LONG).show(); return }
-        uploadDiagnostic(car, record.sessionName, record.complaint, uris)
+        uploadDiagnostic(car, record.sessionName, complaint, uris)
     }
 
     private fun performDelete(record: DiagnosticRecordStore.Record) {
@@ -457,15 +662,16 @@ class AlfaMainActivity : ComponentActivity() {
     }
 
     private fun requestObd() {
+        resetObdData()
         val permissions = if (Build.VERSION.SDK_INT >= 31) arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT) else emptyArray()
         if (permissions.any { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }) requestPermissions(permissions, obdPermissionRequest)
-        else { configureObd(); obd.scan(settingsPrefs.getString("last_obd", null)) }
+        else { activeKind = "ble"; configureObd(); startObdBusy("Поиск адаптеров…", 12000); ble.scan(settingsPrefs.getString("last_obd", null)) }
     }
 
     override fun onRequestPermissionsResult(request: Int, permissions: Array<String>, results: IntArray) {
         super.onRequestPermissionsResult(request, permissions, results)
         when (request) {
-            obdPermissionRequest -> if (results.all { it == PackageManager.PERMISSION_GRANTED }) { configureObd(); obd.scan(settingsPrefs.getString("last_obd", null)) }
+            obdPermissionRequest -> if (results.all { it == PackageManager.PERMISSION_GRANTED }) { activeKind = "ble"; configureObd(); startObdBusy("Поиск адаптеров…", 12000); ble.scan(settingsPrefs.getString("last_obd", null)) }
             recordPermissionRequest -> if (results.all { it == PackageManager.PERMISSION_GRANTED }) startRecording()
         }
     }
@@ -532,7 +738,7 @@ class AlfaMainActivity : ComponentActivity() {
         uploadDiagnostic(state.car, state.sessionName, complaint, lastSessionUris)
     }
 
-    override fun onDestroy() { recorder?.stop(); recorder = null; setKeepScreenOn(false); if (::obd.isInitialized) obd.close(); super.onDestroy() }
+    override fun onDestroy() { recorder?.stop(); recorder = null; setKeepScreenOn(false); if (::ble.isInitialized) ble.close(); spp.close(); wifi.close(); super.onDestroy() }
 }
 
 private class CarEditorState(val carId: String, val returnToDiagnostic: Boolean, car: Car) {
@@ -555,6 +761,10 @@ private class PostRecordState(val car: Car, val sessionName: String, val limitRe
     var complaint by mutableStateOf("")
 }
 
+private class HistoricalComplaintState(val car: Car, val record: DiagnosticRecordStore.Record) {
+    var complaint by mutableStateOf("")
+}
+
 @Composable
 private fun MainScreen(
     carTitle: String,
@@ -568,8 +778,14 @@ private fun MainScreen(
     onChangeCar: () -> Unit,
     onAddCar: () -> Unit,
     onHistory: () -> Unit,
-    connectLabel: String,
-    onConnect: () -> Unit,
+    onHelp: () -> Unit,
+    onServiceBook: () -> Unit,
+    savedLabel: String,
+    obdBusy: Boolean,
+    obdBusyText: String,
+    onDisconnect: () -> Unit,
+    onConnectSaved: () -> Unit,
+    onChooseNew: () -> Unit,
     onToggleRecord: () -> Unit,
     obdLog: List<String>,
     showObdLog: Boolean,
@@ -591,26 +807,51 @@ private fun MainScreen(
                 Spacer(Modifier.width(8.dp))
                 Button(onClick = onAddCar, modifier = Modifier.weight(1f)) { Text("+ Добавить") }
             }
-            Button(onClick = onHistory, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = DiagGray)) { Text("История диагностики") }
+            Button(onClick = onServiceBook, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite)) { Text("Сервисная книжка") }
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                Button(onClick = onHistory, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite)) { Text("История") }
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = onHelp, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite)) { Text("Помощь") }
+            }
             HorizontalDivider(Modifier.padding(top = 14.dp), color = DiagGray)
-            Button(
-                onClick = onConnect,
-                enabled = carEnabled,
-                colors = ButtonDefaults.buttonColors(containerColor = if (obdConnected) DiagGreen else MaterialTheme.colorScheme.primary),
-                modifier = Modifier.fillMaxWidth().padding(top = 14.dp)
-            ) { Text(connectLabel) }
-            Row(Modifier.fillMaxWidth().padding(top = 12.dp)) {
-                Text(obdValuesText, color = MaterialTheme.colorScheme.onBackground, fontSize = 18.sp, modifier = Modifier.weight(1f))
-                Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                    Text("Ошибки:", color = MaterialTheme.colorScheme.onBackground, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                    if (errorCodes.isEmpty()) {
-                        Text("—", color = DiagLightGray, fontSize = 18.sp)
-                    } else {
-                        errorCodes.forEach { Text(it, color = DiagRed, fontSize = 18.sp) }
+            if (obdBusy) {
+                Row(Modifier.fillMaxWidth().padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(12.dp))
+                    Text(obdBusyText, color = DiagLightGray, fontSize = 16.sp)
+                }
+            } else {
+                when {
+                    obdConnected -> Button(
+                        onClick = onDisconnect,
+                        enabled = carEnabled,
+                        colors = ButtonDefaults.buttonColors(containerColor = DiagGreen),
+                        modifier = Modifier.fillMaxWidth().padding(top = 14.dp)
+                    ) { Text("Отключить") }
+                    savedLabel.isNotBlank() -> {
+                        Button(onClick = onConnectSaved, enabled = carEnabled, modifier = Modifier.fillMaxWidth().padding(top = 14.dp)) { Text("Подключить: $savedLabel") }
+                        Button(onClick = onChooseNew, enabled = carEnabled, colors = ButtonDefaults.buttonColors(containerColor = DiagGray), modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Выбрать другой адаптер") }
                     }
+                    else -> Button(onClick = onChooseNew, enabled = carEnabled, modifier = Modifier.fillMaxWidth().padding(top = 14.dp)) { Text("Подключить ELM327") }
                 }
             }
-            Button(onClick = onToggleRecord, enabled = carEnabled, modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) { Text(if (recording) "ОСТАНОВИТЬ ЗАПИСЬ" else "НАЧАТЬ ЗАПИСЬ") }
+            val obdLines = obdValuesText.split("\n")
+            Row(Modifier.fillMaxWidth().padding(top = 12.dp)) {
+                Column(Modifier.weight(1f)) {
+                    obdLines.take(4).forEach { Text(it, color = MaterialTheme.colorScheme.onBackground, fontSize = 18.sp) }
+                }
+                Column(Modifier.weight(1f)) {
+                    obdLines.drop(4).take(4).forEach { Text(it, color = MaterialTheme.colorScheme.onBackground, fontSize = 18.sp) }
+                }
+            }
+            Text("Ошибки:", color = MaterialTheme.colorScheme.onBackground, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp))
+            errorCodes.forEach { Text(it, color = DiagRed, fontSize = 18.sp) }
+            Button(
+                onClick = onToggleRecord,
+                enabled = carEnabled,
+                colors = ButtonDefaults.buttonColors(containerColor = if (recording) DiagGreen else MaterialTheme.colorScheme.primary),
+                modifier = Modifier.fillMaxWidth().padding(top = 20.dp)
+            ) { Text(if (recording) "ОСТАНОВИТЬ ЗАПИСЬ" else "НАЧАТЬ ЗАПИСЬ") }
             LinearProgressIndicator(
                 progress = { recordElapsedSec.coerceIn(0, 300) / 300f },
                 color = DiagRed,
@@ -623,6 +864,7 @@ private fun MainScreen(
                 modifier = Modifier.padding(top = 8.dp, bottom = 16.dp)
             )
 
+            /*
             if (showObdLog) {
                 HorizontalDivider(color = DiagGray)
                 Text("Журнал OBD", color = MaterialTheme.colorScheme.onBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp))
@@ -644,6 +886,7 @@ private fun MainScreen(
                         .padding(top = 8.dp, bottom = 24.dp)
                 )
             }
+            */
         }
     }
 }
@@ -686,12 +929,14 @@ private fun CarsDialog(cars: List<Car>, selectedCar: Car?, onSelect: (Car) -> Un
 }
 
 @Composable
-private fun ObdDevicesDialog(devices: List<TargetElm327Ble.DeviceInfo>, onSelect: (TargetElm327Ble.DeviceInfo) -> Unit, onClose: () -> Unit) {
+private fun ObdDevicesDialog(devices: List<ObdDevice>, hint: String = "", onSelect: (ObdDevice) -> Unit, onClose: () -> Unit) {
     AlertDialog(
         onDismissRequest = onClose,
         title = { Text("Выберите OBD-адаптер") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
+                if (hint.isNotBlank()) Text(hint, color = DiagLightGray, fontSize = 14.sp, modifier = Modifier.padding(bottom = 12.dp))
+                if (devices.isEmpty()) Text("Список пуст.", color = DiagLightGray)
                 devices.forEach { d ->
                     Text(d.label(), modifier = Modifier.fillMaxWidth().clickable { onSelect(d) }.padding(vertical = 12.dp))
                 }
@@ -699,6 +944,40 @@ private fun ObdDevicesDialog(devices: List<TargetElm327Ble.DeviceInfo>, onSelect
         },
         dismissButton = { TextButton(onClick = onClose) { Text("Отмена") } },
         confirmButton = {}
+    )
+}
+
+@Composable
+private fun ConnectChooserDialog(onBle: () -> Unit, onSpp: () -> Unit, onWifi: () -> Unit, onCancel: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Тип подключения") },
+        text = {
+            Column {
+                Button(onClick = onBle, modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) { Text("Bluetooth LE (BLE)") }
+                Button(onClick = onSpp, modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) { Text("Bluetooth (SPP)") }
+                Button(onClick = onWifi, modifier = Modifier.fillMaxWidth()) { Text("Wi-Fi") }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onCancel) { Text("Отмена") } }
+    )
+}
+
+@Composable
+private fun WifiDialog(initial: String, onConnect: (String) -> Unit, onCancel: () -> Unit) {
+    var host by remember { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Wi-Fi адаптер") },
+        text = {
+            Column {
+                Text("Введите адрес адаптера: host или host:порт (по умолчанию порт 35000).", fontSize = 14.sp, modifier = Modifier.padding(bottom = 8.dp))
+                OutlinedTextField(value = host, onValueChange = { host = it }, label = { Text("Адрес") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            }
+        },
+        confirmButton = { TextButton(onClick = { if (host.isNotBlank()) onConnect(host.trim()) }) { Text("Подключить") } },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Отмена") } }
     )
 }
 
@@ -784,6 +1063,23 @@ private fun PostRecordDialog(state: PostRecordState, onClose: () -> Unit, onStar
 }
 
 @Composable
+private fun HistoricalComplaintDialog(state: HistoricalComplaintState, onSend: () -> Unit, onCancel: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Опишите проблему") },
+        text = {
+            Column {
+                Text("Чтобы ИИ разобрал запись, опишите, что вас беспокоит.")
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(value = state.complaint, onValueChange = { state.complaint = it }, label = { Text("Что вас беспокоит?") }, minLines = 4, modifier = Modifier.fillMaxWidth())
+            }
+        },
+        confirmButton = { TextButton(onClick = onSend, enabled = state.complaint.isNotBlank()) { Text("ОТПРАВИТЬ ИИ") } },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Отмена") } }
+    )
+}
+
+@Composable
 private fun RecordWarningDialog(noShow: Boolean, onNoShowChange: (Boolean) -> Unit, onCancel: () -> Unit, onStart: () -> Unit) {
     val bullets = listOf(
         "Если у вас есть OBD-адаптер (ELM327) — подключите его: так диагностика будет точнее.",
@@ -826,7 +1122,132 @@ private fun RecordWarningDialog(noShow: Boolean, onNoShowChange: (Boolean) -> Un
 }
 
 @Composable
-private fun WelcomeScreen(onDismiss: () -> Unit) {
+private fun ServiceBookScreen(car: Car, entries: List<ServiceEntry>, hints: List<String>, onAdd: () -> Unit, onEdit: (ServiceEntry) -> Unit, onDelete: (ServiceEntry) -> Unit, onBack: () -> Unit) {
+    Surface(
+        Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 20.dp, vertical = 8.dp)) {
+            Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Сервисная книжка", fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                TextButton(onClick = onBack) { Text("Назад") }
+            }
+            Text(car.title(), color = DiagLightGray, fontSize = 16.sp, modifier = Modifier.padding(bottom = 8.dp))
+            Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())) {
+                if (hints.isNotEmpty()) {
+                    Text("Подсказки (ориентировочно)", fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.padding(bottom = 6.dp))
+                    hints.forEach { Text("• $it", color = DiagLightGray, fontSize = 15.sp, modifier = Modifier.padding(bottom = 4.dp)) }
+                    HorizontalDivider(Modifier.padding(vertical = 12.dp), color = DiagGray)
+                }
+                if (entries.isEmpty()) Text("Записей пока нет. Добавьте первую.", color = DiagLightGray)
+                entries.forEach { e ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f).clickable { onEdit(e) }) {
+                            val head = listOfNotNull(
+                                e.kind.ifBlank { null },
+                                e.mileage.ifBlank { null }?.let { "$it км" },
+                                e.date.ifBlank { null }
+                            ).joinToString(" · ")
+                            if (head.isNotBlank()) Text(head, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                            if (e.title.isNotBlank()) Text(e.title, fontSize = 16.sp)
+                            if (e.note.isNotBlank()) Text(e.note, color = DiagLightGray, fontSize = 14.sp)
+                        }
+                        IconButton(onClick = { onDelete(e) }) { Icon(Icons.Filled.Delete, contentDescription = "Удалить", tint = DiagRed) }
+                    }
+                    HorizontalDivider(color = DiagGray)
+                }
+            }
+            Button(onClick = onAdd, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("+ Добавить запись") }
+        }
+    }
+}
+
+@Composable
+private fun ServiceEntryDialog(entry: ServiceEntry, onSave: (ServiceEntry) -> Unit, onDismiss: () -> Unit) {
+    var date by remember { mutableStateOf(entry.date) }
+    var mileage by remember { mutableStateOf(entry.mileage) }
+    var kind by remember { mutableStateOf(entry.kind.ifBlank { "ТО" }) }
+    var title by remember { mutableStateOf(entry.title) }
+    var note by remember { mutableStateOf(entry.note) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (entry.title.isBlank() && entry.note.isBlank()) "Новая запись" else "Запись") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                OutlinedTextField(value = date, onValueChange = { date = it }, label = { Text("Дата (напр. 30.09.2026)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = mileage, onValueChange = { mileage = it.filter { c -> c.isDigit() } }, label = { Text("Пробег, км") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
+                Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    ServiceStore.KINDS.forEach { k ->
+                        RadioButton(selected = kind == k, onClick = { kind = k })
+                        Text(k, modifier = Modifier.padding(end = 8.dp))
+                    }
+                }
+                OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Что сделано (кратко)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = note, onValueChange = { note = it }, label = { Text("Описание (необязательно)") }, minLines = 3, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(entry.copy(date = date.trim(), mileage = mileage.trim(), kind = kind, title = title.trim(), note = note.trim())) }, enabled = title.isNotBlank() || note.isNotBlank()) { Text("Сохранить") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
+    )
+}
+
+private data class HelpStep(val emoji: String, val title: String, val text: String)
+
+@Composable
+private fun HelpScreen(onClose: () -> Unit) {
+    val steps = listOf(
+        HelpStep("🚗", "Добавьте автомобиль", "Нажмите «+ Добавить» и заполните данные машины. Можно определить по VIN."),
+        HelpStep("🔌", "Подключите OBD (если есть)", "Кнопка «Подключить ELM327»: BLE, Bluetooth или Wi-Fi. Без адаптера тоже можно — по GPS и звуку."),
+        HelpStep("📱", "Закрепите телефон", "Поставьте телефон в держатель в машине и заведите двигатель."),
+        HelpStep("🎙️", "Начните запись", "Нажмите «НАЧАТЬ ЗАПИСЬ» и поезжайте. Запись идёт до 5 минут."),
+        HelpStep("⏹️", "Остановите запись", "Когда проедете — нажмите «ОСТАНОВИТЬ ЗАПИСЬ»."),
+        HelpStep("💬", "Опишите проблему", "Расскажите, что беспокоит, и нажмите «НАЧАТЬ ДИАГНОСТИКУ ИИ»."),
+        HelpStep("📄", "Получите заключение", "При необходимости уточните у ИИ и сохраните PDF-заключение.")
+    )
+    var step by remember { mutableStateOf(0) }
+    val s = steps[step]
+    val transition = rememberInfiniteTransition()
+    val scale by transition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.15f,
+        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse)
+    )
+    Surface(
+        Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(
+            Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(s.emoji, fontSize = 96.sp, modifier = Modifier.graphicsLayer { scaleX = scale; scaleY = scale })
+            Spacer(Modifier.height(24.dp))
+            Text(s.title, fontSize = 24.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(12.dp))
+            Text(s.text, fontSize = 16.sp, color = DiagLightGray, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(24.dp))
+            Row {
+                steps.indices.forEach { i ->
+                    Box(Modifier.padding(4.dp).size(if (i == step) 10.dp else 8.dp).clip(CircleShape).background(if (i == step) DiagRed else DiagGray))
+                }
+            }
+            Spacer(Modifier.height(24.dp))
+            Row(Modifier.fillMaxWidth()) {
+                if (step > 0) {
+                    Button(onClick = { step-- }, colors = ButtonDefaults.buttonColors(containerColor = DiagGray), modifier = Modifier.weight(1f)) { Text("Назад") }
+                    Spacer(Modifier.width(8.dp))
+                }
+                if (step < steps.lastIndex) Button(onClick = { step++ }, modifier = Modifier.weight(1f)) { Text("Далее") }
+                else Button(onClick = onClose, modifier = Modifier.weight(1f)) { Text("Понятно") }
+            }
+            TextButton(onClick = onClose) { Text("Пропустить") }
+        }
+    }
+}
+
+@Composable
+private fun WelcomeScreen(onDismiss: () -> Unit, onHelp: () -> Unit) {
     val scrollState = rememberScrollState()
     Surface(
         Modifier
@@ -843,6 +1264,12 @@ private fun WelcomeScreen(onDismiss: () -> Unit) {
                     Spacer(Modifier.height(20.dp))
                     Text("Добро пожаловать в", fontSize = 24.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
                     Text("Alfa Diagnostic", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = DiagRed, textAlign = TextAlign.Center)
+                    Spacer(Modifier.height(18.dp))
+                    Button(
+                        onClick = onHelp,
+                        colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)
+                    ) { Text("Как пользоваться") }
                     Spacer(Modifier.height(18.dp))
                     Text("Alfa Diagnostic помогает выявить неисправности автомобиля по данным о его работе и по посторонним звукам.", fontSize = 16.sp, modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp))
                     Text("Слышны скрип, скрежет, стук, шорох или гул — спереди или сзади, слева или справа? Приложение запишет звук и одновременно соберёт данные из разных источников:", fontSize = 16.sp, modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp))

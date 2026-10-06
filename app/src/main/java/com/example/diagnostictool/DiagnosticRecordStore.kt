@@ -35,6 +35,7 @@ class DiagnosticRecordStore(context: Context) {
     fun markAiSent(sessionName: String, diagnosticId: String) { update(sessionName) { it.put("aiSent", true); it.put("diagnosticId", diagnosticId) } }
     fun setAiResponse(sessionName: String, uri: String) { update(sessionName) { it.put("aiSent", true); it.put("aiResponseUri", uri) } }
     fun setSessionUri(sessionName: String, uri: String) { update(sessionName) { it.put("sessionUri", uri) } }
+    fun setComplaint(sessionName: String, complaint: String) { update(sessionName) { it.put("complaint", complaint) } }
 
     fun delete(sessionName: String) {
         val a = JSONArray(prefs.getString("items", "[]"))

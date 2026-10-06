@@ -126,6 +126,42 @@ object DiagnosticApi {
         }
     }
 
+    fun retry(id: String, callback: (Result<Unit>) -> Unit) {
+        executor.execute {
+            try {
+                require(baseUrl.isNotBlank()) { "Адрес сервера диагностики не настроен в этой сборке" }
+                val c = (URL("$baseUrl/v1/diagnostics/$id/retry").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"; doOutput = true; connectTimeout = 15_000; readTimeout = 30_000
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    setRequestProperty("Accept", "application/json")
+                    applyHeaders(this)
+                }
+                c.outputStream.use { it.write("{}".toByteArray(Charsets.UTF_8)) }
+                val body = readResponse(c)
+                if (c.responseCode !in 200..299) error("Сервер: ${c.responseCode} $body")
+                callback(Result.success(Unit))
+            } catch (e: Exception) { callback(Result.failure(e)) }
+        }
+    }
+
+    fun finalize(id: String, callback: (Result<String>) -> Unit) {
+        executor.execute {
+            try {
+                require(baseUrl.isNotBlank()) { "Адрес сервера диагностики не настроен в этой сборке" }
+                val c = (URL("$baseUrl/v1/diagnostics/$id/finalize").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"; doOutput = true; connectTimeout = 15_000; readTimeout = 180_000
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    setRequestProperty("Accept", "application/json")
+                    applyHeaders(this)
+                }
+                c.outputStream.use { it.write("{}".toByteArray(Charsets.UTF_8)) }
+                val body = readResponse(c)
+                if (c.responseCode !in 200..299) error("Сервер: ${c.responseCode} $body")
+                callback(Result.success(JSONObject(body).optJSONObject("document")?.toString() ?: ""))
+            } catch (e: Exception) { callback(Result.failure(e)) }
+        }
+    }
+
     fun vin(vin: String, callback: (Result<VinInfo>) -> Unit) {
         executor.execute {
             try {

@@ -14,18 +14,22 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -41,6 +45,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.example.diagnostictool.ui.theme.DiagGray
+import com.example.diagnostictool.ui.theme.DiagLightGray
+import com.example.diagnostictool.ui.theme.DiagWhite
 import com.example.diagnostictool.ui.theme.DiagnosticTheme
 import kotlinx.coroutines.flow.collectLatest
 import org.json.JSONObject
@@ -66,13 +73,14 @@ class DiagnosticChatActivity : ComponentActivity() {
     }
 
     private var stageText by mutableStateOf("")
-    private var conversationText by mutableStateOf("")
+    private var chatLines by mutableStateOf<List<ChatLine>>(emptyList())
     private var questionText by mutableStateOf("")
     private var answerHint by mutableStateOf("Ваш ответ")
     private var answerText by mutableStateOf("")
     private var answerEnabled by mutableStateOf(false)
     private var sendEnabled by mutableStateOf(false)
     private var pdfEnabled by mutableStateOf(false)
+    private var retryEnabled by mutableStateOf(false)
     private var listening by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -86,11 +94,11 @@ class DiagnosticChatActivity : ComponentActivity() {
         setContent {
             DiagnosticTheme {
                 ChatScreen(
-                    stageText = stageText, conversationText = conversationText, questionText = questionText,
+                    stageText = stageText, chatLines = chatLines, questionText = questionText,
                     answerHint = answerHint, answerText = answerText, answerEnabled = answerEnabled,
-                    sendEnabled = sendEnabled, pdfEnabled = pdfEnabled, listening = listening,
+                    sendEnabled = sendEnabled, pdfEnabled = pdfEnabled, retryEnabled = retryEnabled, listening = listening,
                     onAnswerChange = { answerText = it }, onSend = { submitAnswer() }, onMic = { onMicClicked() },
-                    onSavePdf = { savePdf(lastDocument, lastConclusion) }, onBack = { finish() }
+                    onSavePdf = { savePdf() }, onRetry = { retryAnalysis() }, onBack = { finish() }
                 )
             }
         }
@@ -115,7 +123,8 @@ class DiagnosticChatActivity : ComponentActivity() {
                         "error" -> "Ошибка диагностики: ${s.message}"
                         else -> s.message
                     }
-                    conversationText = buildConversation(s)
+                    retryEnabled = s.state == "error"
+                    chatLines = buildLines(s)
                     when (s.state) {
                         "question" -> { questionText = s.question; answerHint = "Ваш ответ"; answerEnabled = true; sendEnabled = true }
                         "completed" -> { questionText = "Можете задать уточняющий вопрос по заключению"; answerHint = "Ваш вопрос"; answerEnabled = true; sendEnabled = true }
@@ -130,16 +139,13 @@ class DiagnosticChatActivity : ComponentActivity() {
         }
     }
 
-    private fun buildConversation(s: DiagnosticApi.Status): String {
-        val b = StringBuilder()
-        if (s.state == "processing") b.append("ИИ получает и сопоставляет данные записи.\n\n")
-        if (s.question.isNotBlank()) b.append("ИИ: ${s.question}\n")
-        if (s.conclusion.isNotBlank()) b.append("\nЗАКЛЮЧЕНИЕ\n${s.conclusion}\n")
-        if (followUp.isNotEmpty()) {
-            b.append("\nДИАЛОГ\n")
-            followUp.forEach { (role, text) -> b.append(if (role == "user") "Вы: $text\n" else "ИИ: $text\n") }
-        }
-        return b.toString()
+    private fun buildLines(s: DiagnosticApi.Status): List<ChatLine> {
+        val list = mutableListOf<ChatLine>()
+        if (s.state == "processing") list += ChatLine("ai", "ИИ получает и сопоставляет данные записи…")
+        if (s.question.isNotBlank()) list += ChatLine("ai", s.question)
+        if (s.conclusion.isNotBlank()) list += ChatLine("ai", "Заключение:\n${s.conclusion}")
+        followUp.forEach { (role, text) -> list += ChatLine(if (role == "user") "user" else "ai", text) }
+        return list
     }
 
     private fun submitAnswer() {
@@ -154,7 +160,7 @@ class DiagnosticChatActivity : ComponentActivity() {
                     result.onSuccess { reply ->
                         followUp += "user" to text; followUp += "assistant" to reply
                         answerText = ""; questionText = "Можете задать уточняющий вопрос по заключению"
-                        conversationText = buildConversation(DiagnosticApi.Status(diagnosticId, lastState, "", "", "", emptyList(), lastConclusion, ""))
+                        chatLines = buildLines(DiagnosticApi.Status(diagnosticId, lastState, "", "", "", emptyList(), lastConclusion, ""))
                     }.onFailure { e -> questionText = "Ошибка отправки: ${e.message}" }
                 }
             }
@@ -166,6 +172,16 @@ class DiagnosticChatActivity : ComponentActivity() {
                     result.onSuccess { answerText = ""; poll() }
                         .onFailure { e -> questionText = "Ошибка отправки: ${e.message}"; sendEnabled = true }
                 }
+            }
+        }
+    }
+
+    private fun retryAnalysis() {
+        retryEnabled = false
+        stageText = "Перезапускаю анализ…"
+        DiagnosticApi.retry(diagnosticId) { result ->
+            runOnUiThread {
+                if (result.isSuccess) poll() else stageText = "Ошибка: ${result.exceptionOrNull()?.message}"
             }
         }
     }
@@ -238,7 +254,17 @@ class DiagnosticChatActivity : ComponentActivity() {
         override fun onEvent(eventType: Int, params: Bundle?) {}
     }
 
-    private fun savePdf(documentJson: String, fallbackText: String) {
+    private fun savePdf() {
+        Toast.makeText(this, "Формирую заключение с учётом диалога…", Toast.LENGTH_SHORT).show()
+        DiagnosticApi.finalize(diagnosticId) { result ->
+            runOnUiThread {
+                val docJson = result.getOrElse { lastDocument }
+                writePdf(docJson.ifBlank { lastDocument }, lastConclusion)
+            }
+        }
+    }
+
+    private fun writePdf(documentJson: String, fallbackText: String) {
         if (documentJson.isBlank() && fallbackText.isBlank()) return
         try {
             val renderer = ConclusionPdfRenderer()
@@ -261,19 +287,35 @@ class DiagnosticChatActivity : ComponentActivity() {
 
 @Composable
 private fun ChatScreen(
-    stageText: String, conversationText: String, questionText: String, answerHint: String,
-    answerText: String, answerEnabled: Boolean, sendEnabled: Boolean, pdfEnabled: Boolean, listening: Boolean,
-    onAnswerChange: (String) -> Unit, onSend: () -> Unit, onMic: () -> Unit, onSavePdf: () -> Unit, onBack: () -> Unit
+    stageText: String, chatLines: List<ChatLine>, questionText: String, answerHint: String,
+    answerText: String, answerEnabled: Boolean, sendEnabled: Boolean, pdfEnabled: Boolean, retryEnabled: Boolean, listening: Boolean,
+    onAnswerChange: (String) -> Unit, onSend: () -> Unit, onMic: () -> Unit, onSavePdf: () -> Unit, onRetry: () -> Unit, onBack: () -> Unit
 ) {
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         Column(Modifier.padding(padding).fillMaxSize().padding(horizontal = 24.dp, vertical = 24.dp)) {
             val scrollState = rememberScrollState()
-            LaunchedEffect(conversationText, stageText, questionText) {
+            LaunchedEffect(chatLines, stageText, questionText) {
                 snapshotFlow { scrollState.maxValue }.collectLatest { scrollState.animateScrollTo(it) }
             }
             Text("Alfa Diagnostic — ИИ", fontSize = 24.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp))
             if (stageText.isNotBlank()) Text(stageText, fontSize = 18.sp, modifier = Modifier.padding(bottom = 12.dp))
-            Text(conversationText, fontSize = 16.sp, modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(scrollState).padding(bottom = 16.dp))
+            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(scrollState).padding(bottom = 16.dp)) {
+                chatLines.forEach { line ->
+                    val isUser = line.role == "user"
+                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
+                        Surface(
+                            color = if (isUser) MaterialTheme.colorScheme.primary else DiagGray,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.widthIn(max = 300.dp)
+                        ) {
+                            Column(Modifier.padding(10.dp)) {
+                                Text(if (isUser) "Вы" else "ИИ", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (isUser) DiagWhite else DiagLightGray)
+                                Text(line.text, fontSize = 16.sp, color = DiagWhite)
+                            }
+                        }
+                    }
+                }
+            }
             if (questionText.isNotBlank()) Text(questionText, fontSize = 18.sp, modifier = Modifier.padding(bottom = 8.dp))
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 OutlinedTextField(value = answerText, onValueChange = onAnswerChange, enabled = answerEnabled, label = { Text(answerHint) }, minLines = 2, modifier = Modifier.weight(1f))
@@ -285,8 +327,11 @@ private fun ChatScreen(
                 }
             }
             Button(onClick = onSend, enabled = sendEnabled, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("ОТПРАВИТЬ ОТВЕТ") }
+            if (retryEnabled) Button(onClick = onRetry, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("ПОВТОРИТЬ АНАЛИЗ") }
             Button(onClick = onSavePdf, enabled = pdfEnabled, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("СОХРАНИТЬ ЗАКЛЮЧЕНИЕ PDF") }
             Button(onClick = onBack, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("НАЗАД") }
         }
     }
 }
+
+private data class ChatLine(val role: String, val text: String)

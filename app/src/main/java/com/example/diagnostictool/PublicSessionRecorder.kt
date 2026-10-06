@@ -188,9 +188,10 @@ class PublicSessionRecorder(
         val rawErrors = activity.currentErrorRaw()
         val errorLines = activity.currentErrorCodes().joinToString("\n")
         File(dir, "errors.txt").writeText(listOf(rawErrors, errorLines).filter { it.isNotBlank() }.joinToString("\n"))
-        val entries = listOf("session.json", "obd.csv", "gps.csv", "sensors.csv", "audio.wav", "errors.txt")
+        File(dir, "journal.json").writeText(activity.currentJournalJson())
+        val entries = listOf("session.json", "obd.csv", "gps.csv", "sensors.csv", "audio.wav", "errors.txt", "journal.json")
             .map { File(dir, it) }
-            .filter { it.exists() && (it.length() > 0 || it.name == "errors.txt") }
+            .filter { it.exists() && (it.length() > 0 || it.name == "errors.txt" || it.name == "journal.json") }
         if (entries.isEmpty()) return
         val uri = createPublicFile("$sessionName.adp", "application/octet-stream")
         val out = BufferedOutputStream(activity.contentResolver.openOutputStream(uri) ?: error("Не удалось создать контейнер"))
