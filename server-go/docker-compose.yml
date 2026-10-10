@@ -1,0 +1,13 @@
+services:
+  diagnostic-server:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "44096:44096"
+    volumes:
+      - diagnostic_data:/data
+
+volumes:
+  diagnostic_data:

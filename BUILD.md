@@ -1,0 +1,1 @@
+Build is configured through GitHub Actions. The debug APK is uploaded as the `DiagnosticTool-debug` workflow artifact.

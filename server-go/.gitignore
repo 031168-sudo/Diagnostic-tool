@@ -1,0 +1,10 @@
+diagnostic-server
+diagnostic-server.exe
+diagnostic-server-linux
+*.exe
+*.exe~
+*~
+data/
+certs/
+.env
+*.log

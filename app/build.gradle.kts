@@ -1,0 +1,63 @@
+import java.util.Properties
+
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
+}
+
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) keystorePropertiesFile.inputStream().use { load(it) }
+}
+
+android {
+    namespace = "com.example.diagnostictool"
+    compileSdk = 35
+    defaultConfig {
+        applicationId = "ru.alfanomy.diagnostictool"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 4
+        versionName = "1.3"
+        val diagnosticApiUrl = (project.findProperty("diagnosticApiUrl") as String?)?.trim() ?: ""
+        buildConfigField("String", "DIAGNOSTIC_API_URL", "\"${diagnosticApiUrl.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
+        val diagnosticApiToken = (project.findProperty("diagnosticApiToken") as String?)?.trim() ?: ""
+        buildConfigField("String", "DIAGNOSTIC_API_TOKEN", "\"${diagnosticApiToken.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
+        buildFeatures { buildConfig = true; compose = true }
+    }
+    signingConfigs {
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = "17" }
+}
+
+dependencies {
+    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("com.google.android.material:material:1.12.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+}
