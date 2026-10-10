@@ -43,6 +43,7 @@ type Config struct {
 type Server struct {
 	cfg         Config
 	store       *Store
+	accounts    *AccountStore
 	ds          *DeepSeek
 	transcriber *Transcriber
 	httpClient  *http.Client
@@ -73,6 +74,7 @@ func main() {
 	srv := &Server{
 		cfg:        cfg,
 		store:      NewStore(cfg.DataDir),
+		accounts:   NewAccountStore(cfg.DataDir),
 		ds:         NewDeepSeek(cfg.BaseURL, cfg.APIKey, cfg.Model),
 		httpClient: &http.Client{Timeout: 25 * time.Second},
 		vinCache:   newVINCache(),
@@ -98,6 +100,10 @@ func main() {
 	mux.Handle("POST /v1/diagnostics/{id}/finalize", srv.protect(http.HandlerFunc(srv.handleFinalize)))
 	mux.Handle("POST /v1/diagnostics/{id}/retry", srv.protect(http.HandlerFunc(srv.handleRetry)))
 	mux.Handle("GET /v1/vin/{vin}", srv.protect(http.HandlerFunc(srv.handleVIN)))
+	mux.Handle("POST /v1/account/register", srv.protect(http.HandlerFunc(srv.handleAccountRegister)))
+	mux.Handle("GET /v1/account/me", srv.protect(http.HandlerFunc(srv.handleAccountMe)))
+	mux.Handle("POST /v1/account/transfer/create", srv.protect(http.HandlerFunc(srv.handleAccountTransferCreate)))
+	mux.Handle("POST /v1/account/transfer/redeem", srv.protect(http.HandlerFunc(srv.handleAccountTransferRedeem)))
 	srv.startLimiterCleanup()
 
 	if !srv.ds.Enabled() {

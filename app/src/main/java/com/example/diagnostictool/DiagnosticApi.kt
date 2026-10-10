@@ -42,6 +42,15 @@ object DiagnosticApi {
         val message: String
     )
 
+    data class Account(
+        val accountId: String,
+        val token: String,
+        val credits: Int,
+        val subscriptionUntil: String
+    )
+
+    data class TransferCode(val code: String, val expiresAt: String)
+
     fun upload(context: Context, car: Car, sessionName: String, complaint: String, files: List<Uri>, callback: (Result<String>) -> Unit) {
         executor.execute {
             try {
@@ -184,6 +193,85 @@ object DiagnosticApi {
         }
     }
 
+    fun accountRegister(callback: (Result<Account>) -> Unit) {
+        executor.execute {
+            try {
+                require(baseUrl.isNotBlank()) { "Адрес сервера диагностики не настроен в этой сборке" }
+                val c = (URL("$baseUrl/v1/account/register").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"; doOutput = true; connectTimeout = 15_000; readTimeout = 30_000
+                    setRequestProperty("Accept", "application/json")
+                    applyHeaders(this)
+                }
+                c.outputStream.use { }
+                val body = readResponse(c)
+                if (c.responseCode !in 200..299) error("Сервер: ${c.responseCode} $body")
+                callback(Result.success(parseAccount(body)))
+            } catch (e: Exception) { callback(Result.failure(e)) }
+        }
+    }
+
+    fun accountMe(token: String, callback: (Result<Account>) -> Unit) {
+        executor.execute {
+            try {
+                require(baseUrl.isNotBlank()) { "Адрес сервера диагностики не настроен в этой сборке" }
+                val c = (URL("$baseUrl/v1/account/me").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"; connectTimeout = 15_000; readTimeout = 30_000
+                    setRequestProperty("Accept", "application/json")
+                    applyHeaders(this); applyAccountHeader(this, token)
+                }
+                val body = readResponse(c)
+                if (c.responseCode !in 200..299) error("Сервер: ${c.responseCode} $body")
+                callback(Result.success(parseAccount(body)))
+            } catch (e: Exception) { callback(Result.failure(e)) }
+        }
+    }
+
+    fun accountTransferCreate(token: String, callback: (Result<TransferCode>) -> Unit) {
+        executor.execute {
+            try {
+                require(baseUrl.isNotBlank()) { "Адрес сервера диагностики не настроен в этой сборке" }
+                val c = (URL("$baseUrl/v1/account/transfer/create").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"; doOutput = true; connectTimeout = 15_000; readTimeout = 30_000
+                    setRequestProperty("Accept", "application/json")
+                    applyHeaders(this); applyAccountHeader(this, token)
+                }
+                c.outputStream.use { }
+                val body = readResponse(c)
+                if (c.responseCode !in 200..299) error("Сервер: ${c.responseCode} $body")
+                val o = JSONObject(body)
+                callback(Result.success(TransferCode(o.optString("code"), o.optString("expiresAt"))))
+            } catch (e: Exception) { callback(Result.failure(e)) }
+        }
+    }
+
+    fun accountTransferRedeem(code: String, callback: (Result<Account>) -> Unit) {
+        executor.execute {
+            try {
+                require(baseUrl.isNotBlank()) { "Адрес сервера диагностики не настроен в этой сборке" }
+                val c = (URL("$baseUrl/v1/account/transfer/redeem").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"; doOutput = true; connectTimeout = 15_000; readTimeout = 30_000
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    setRequestProperty("Accept", "application/json")
+                    applyHeaders(this)
+                }
+                c.outputStream.use { it.write(JSONObject().put("code", code).toString().toByteArray(Charsets.UTF_8)) }
+                val body = readResponse(c)
+                if (c.responseCode !in 200..299) error("Сервер: ${c.responseCode} $body")
+                callback(Result.success(parseAccount(body)))
+            } catch (e: Exception) { callback(Result.failure(e)) }
+        }
+    }
+
+    private fun parseAccount(body: String): Account {
+        val o = JSONObject(body)
+        return Account(
+            accountId = o.optString("accountId"),
+            token = o.optString("token"),
+            credits = o.optInt("credits", 0),
+            subscriptionUntil = o.optString("subscriptionUntil")
+        )
+    }
+
     private fun parseStatus(body: String): Status {
         val o = JSONObject(body); val a = o.optJSONArray("options") ?: JSONArray()
         val options = (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
@@ -204,6 +292,10 @@ object DiagnosticApi {
     private fun applyHeaders(c: HttpURLConnection) {
         val token = BuildConfig.DIAGNOSTIC_API_TOKEN
         if (token.isNotBlank()) c.setRequestProperty("X-Api-Key", token)
+    }
+
+    private fun applyAccountHeader(c: HttpURLConnection, token: String) {
+        if (token.isNotBlank()) c.setRequestProperty("X-Account-Token", token)
     }
 
     private fun readResponse(c: HttpURLConnection): String {

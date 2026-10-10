@@ -181,6 +181,7 @@ class AlfaMainActivity : ComponentActivity() {
     private val carStore by lazy { CarStore(this) }
     private val recordStore by lazy { DiagnosticRecordStore(this) }
     private val serviceStore by lazy { ServiceStore(this) }
+    private val accountStore by lazy { AccountStore(this) }
     private var lastSessionUris: List<Uri> = emptyList()
     private val obdPermissionRequest = 10
     private val recordPermissionRequest = 11
@@ -232,6 +233,13 @@ class AlfaMainActivity : ComponentActivity() {
     private var postRecordDialog by mutableStateOf<PostRecordState?>(null)
     private var historicalComplaint by mutableStateOf<HistoricalComplaintState?>(null)
 
+    private var accountDialog by mutableStateOf(false)
+    private var accountCredits by mutableStateOf<Int?>(null)
+    private var accountSubscription by mutableStateOf("")
+    private var accountTransferCode by mutableStateOf<String?>(null)
+    private var accountMessage by mutableStateOf<String?>(null)
+    private var accountBusy by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -255,6 +263,7 @@ class AlfaMainActivity : ComponentActivity() {
                         onHistory = { showHistory() },
                         onHelp = { helpOpen = true },
                         onServiceBook = { serviceBookOpen = true },
+                        onAccount = { accountDialog = true; refreshAccount() },
                         savedLabel = savedAdapter,
                         obdBusy = obdBusy,
                         obdBusyText = obdBusyText,
@@ -369,6 +378,18 @@ class AlfaMainActivity : ComponentActivity() {
                     onCancel = { wifiDialog = false }
                 )
 
+                if (accountDialog) AccountDialog(
+                    accountId = accountStore.accountId,
+                    credits = accountCredits,
+                    subscriptionUntil = accountSubscription,
+                    transferCode = accountTransferCode,
+                    busy = accountBusy,
+                    message = accountMessage,
+                    onCreateCode = { createTransferCode() },
+                    onRedeem = { redeemTransferCode(it) },
+                    onClose = { accountDialog = false; accountTransferCode = null; accountMessage = null }
+                )
+
                 if (historyDialog) currentCar?.let { car ->
                     HistoryDialog(
                         carTitle = car.title(), records = remember(historyVersion) { recordStore.forCar(car.id) },
@@ -421,6 +442,7 @@ class AlfaMainActivity : ComponentActivity() {
         }
         showWelcome = !settingsPrefs.getBoolean("welcome_shown", false)
         if (!showWelcome) enterCarFlow()
+        if (!accountStore.isRegistered) registerAccount() else refreshAccount()
     }
 
     private fun enterCarFlow() {
@@ -594,6 +616,66 @@ class AlfaMainActivity : ComponentActivity() {
     private fun showHistory() {
         if (currentCar == null) { firstCarDialog = true; return }
         historyDialog = true
+    }
+
+    private fun registerAccount() {
+        accountMessage = "Создаю аккаунт…"
+        DiagnosticApi.accountRegister { result ->
+            runOnUiThread {
+                result.onSuccess { acc ->
+                    accountStore.save(acc.accountId, acc.token)
+                    accountCredits = acc.credits
+                    accountSubscription = acc.subscriptionUntil
+                    accountMessage = null
+                }.onFailure { e -> accountMessage = "Не удалось создать аккаунт: ${e.message}" }
+            }
+        }
+    }
+
+    private fun refreshAccount() {
+        val token = accountStore.token
+        if (token.isNullOrBlank()) { registerAccount(); return }
+        accountBusy = true
+        DiagnosticApi.accountMe(token) { result ->
+            runOnUiThread {
+                accountBusy = false
+                result.onSuccess { acc ->
+                    accountCredits = acc.credits
+                    accountSubscription = acc.subscriptionUntil
+                }.onFailure { e -> accountMessage = "Не удалось получить данные аккаунта: ${e.message}" }
+            }
+        }
+    }
+
+    private fun createTransferCode() {
+        val token = accountStore.token ?: return
+        accountBusy = true
+        accountMessage = null
+        DiagnosticApi.accountTransferCreate(token) { result ->
+            runOnUiThread {
+                accountBusy = false
+                result.onSuccess { accountTransferCode = it.code }
+                    .onFailure { e -> accountMessage = "Не удалось создать код: ${e.message}" }
+            }
+        }
+    }
+
+    private fun redeemTransferCode(code: String) {
+        if (code.isBlank()) return
+        accountBusy = true
+        accountMessage = null
+        DiagnosticApi.accountTransferRedeem(code) { result ->
+            runOnUiThread {
+                accountBusy = false
+                result.onSuccess { acc ->
+                    accountStore.save(acc.accountId, acc.token)
+                    accountCredits = acc.credits
+                    accountSubscription = acc.subscriptionUntil
+                    accountTransferCode = null
+                    accountMessage = "Аккаунт привязан"
+                }.onFailure { e -> accountMessage = "Код не принят: ${e.message}" }
+            }
+        }
     }
 
     private fun openPdf(record: DiagnosticRecordStore.Record) {
@@ -780,6 +862,7 @@ private fun MainScreen(
     onHistory: () -> Unit,
     onHelp: () -> Unit,
     onServiceBook: () -> Unit,
+    onAccount: () -> Unit,
     savedLabel: String,
     obdBusy: Boolean,
     obdBusyText: String,
@@ -810,6 +893,8 @@ private fun MainScreen(
             Button(onClick = onServiceBook, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite)) { Text("Сервисная книжка") }
             Row(Modifier.fillMaxWidth().padding(top = 8.dp)) {
                 Button(onClick = onHistory, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite)) { Text("История") }
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = onAccount, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite)) { Text("Аккаунт") }
                 Spacer(Modifier.width(8.dp))
                 Button(onClick = onHelp, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite)) { Text("Помощь") }
             }
@@ -979,6 +1064,75 @@ private fun WifiDialog(initial: String, onConnect: (String) -> Unit, onCancel: (
         confirmButton = { TextButton(onClick = { if (host.isNotBlank()) onConnect(host.trim()) }) { Text("Подключить") } },
         dismissButton = { TextButton(onClick = onCancel) { Text("Отмена") } }
     )
+}
+
+@Composable
+private fun AccountDialog(
+    accountId: String?,
+    credits: Int?,
+    subscriptionUntil: String,
+    transferCode: String?,
+    busy: Boolean,
+    message: String?,
+    onCreateCode: () -> Unit,
+    onRedeem: (String) -> Unit,
+    onClose: () -> Unit
+) {
+    var input by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("Аккаунт") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                if (accountId.isNullOrBlank()) {
+                    Text("Создаю аккаунт…")
+                } else {
+                    Text("ID: ${accountId.take(8)}…", fontFamily = FontFamily.Monospace)
+                    Spacer(Modifier.height(6.dp))
+                    Text("Диагностик в пакете: ${credits ?: 0}")
+                    Text(subscriptionLabel(subscriptionUntil))
+                }
+                Spacer(Modifier.height(14.dp))
+                Button(
+                    onClick = onCreateCode,
+                    enabled = !busy && !accountId.isNullOrBlank(),
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = DiagGray)
+                ) { Text("Создать код переноса") }
+                if (transferCode != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("Код переноса: $transferCode", fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                    Text("Введите его на новом телефоне ниже. Код действует 20 минут и сработает один раз.", fontSize = 13.sp, color = DiagLightGray)
+                }
+                Spacer(Modifier.height(16.dp))
+                HorizontalDivider(color = DiagGray)
+                Spacer(Modifier.height(12.dp))
+                Text("Перенос на этот телефон", fontWeight = FontWeight.Bold)
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { input = it.uppercase().filter { c -> c.isLetterOrDigit() } },
+                    label = { Text("Код переноса") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                )
+                Button(
+                    onClick = { onRedeem(input.trim()) },
+                    enabled = input.isNotBlank() && !busy,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                ) { Text("Привязать аккаунт") }
+                message?.let {
+                    Spacer(Modifier.height(10.dp))
+                    Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 14.sp)
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text("Закрыть") } }
+    )
+}
+
+private fun subscriptionLabel(until: String): String {
+    if (until.isBlank()) return "Подписка не активна"
+    return "Подписка активна до: ${until.substringBefore('T')}"
 }
 
 @OptIn(ExperimentalLayoutApi::class)
