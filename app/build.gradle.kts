@@ -1,14 +1,21 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) keystorePropertiesFile.inputStream().use { load(it) }
+}
+
 android {
     namespace = "com.example.diagnostictool"
     compileSdk = 35
     defaultConfig {
-        applicationId = "com.example.diagnostictool"
+        applicationId = "ru.alfanomy.diagnostictool"
         minSdk = 26
         targetSdk = 35
         versionCode = 4
@@ -18,6 +25,22 @@ android {
         val diagnosticApiToken = (project.findProperty("diagnosticApiToken") as String?)?.trim() ?: ""
         buildConfigField("String", "DIAGNOSTIC_API_TOKEN", "\"${diagnosticApiToken.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         buildFeatures { buildConfig = true; compose = true }
+    }
+    signingConfigs {
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
