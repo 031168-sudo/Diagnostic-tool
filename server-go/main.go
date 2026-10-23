@@ -30,6 +30,7 @@ type Config struct {
 	TranscribeModel   string
 	TranscribeLang    string
 	AppToken          string
+	AdminToken        string
 	TLSDomains        []string
 	ACMEEmail         string
 	HTTPSPort         string
@@ -38,12 +39,18 @@ type Config struct {
 	RateLimitPerMin   int
 	MaxUploadMB       int
 	MaxUploadFiles    int
+	PriceInMiss       float64
+	PriceInHit        float64
+	PriceOut          float64
+	PriceSTTPerMin    float64
+	PriceVersion      string
 }
 
 type Server struct {
 	cfg         Config
 	store       *Store
 	accounts    *AccountStore
+	usage       *UsageStore
 	ds          *DeepSeek
 	transcriber *Transcriber
 	httpClient  *http.Client
@@ -72,9 +79,16 @@ func main() {
 	}
 
 	srv := &Server{
-		cfg:        cfg,
-		store:      NewStore(cfg.DataDir),
-		accounts:   NewAccountStore(cfg.DataDir),
+		cfg:      cfg,
+		store:    NewStore(cfg.DataDir),
+		accounts: NewAccountStore(cfg.DataDir),
+		usage: NewUsageStore(cfg.DataDir, Price{
+			InMiss:    cfg.PriceInMiss,
+			InHit:     cfg.PriceInHit,
+			Out:       cfg.PriceOut,
+			STTPerMin: cfg.PriceSTTPerMin,
+			Version:   cfg.PriceVersion,
+		}),
 		ds:         NewDeepSeek(cfg.BaseURL, cfg.APIKey, cfg.Model),
 		httpClient: &http.Client{Timeout: 25 * time.Second},
 		vinCache:   newVINCache(),
@@ -104,6 +118,8 @@ func main() {
 	mux.Handle("GET /v1/account/me", srv.protect(http.HandlerFunc(srv.handleAccountMe)))
 	mux.Handle("POST /v1/account/transfer/create", srv.protect(http.HandlerFunc(srv.handleAccountTransferCreate)))
 	mux.Handle("POST /v1/account/transfer/redeem", srv.protect(http.HandlerFunc(srv.handleAccountTransferRedeem)))
+	mux.Handle("GET /v1/account/usage", srv.protect(http.HandlerFunc(srv.handleAccountUsage)))
+	srv.registerAdmin(mux)
 	srv.startLimiterCleanup()
 
 	if !srv.ds.Enabled() {
@@ -126,6 +142,9 @@ func main() {
 	if cfg.AppToken == "" {
 		log.Printf("ВНИМАНИЕ: APP_TOKEN не задан — сервер не проверяет токен приложения")
 	}
+	if cfg.AdminToken == "" {
+		log.Printf("ВНИМАНИЕ: ADMIN_TOKEN не задан — /v1/admin/usage недоступен")
+	}
 	log.Printf("Diagnostic Tool server (DeepSeek, модель %s) слушает %s, data=%s", cfg.Model, listenAddr, cfg.DataDir)
 	if err := httpSrv.ListenAndServe(); err != nil {
 		log.Fatal(err)
@@ -144,6 +163,7 @@ func loadConfig() Config {
 		TranscribeModel:   strings.TrimSpace(os.Getenv("TRANSCRIBE_MODEL")),
 		TranscribeLang:    envDefault("TRANSCRIBE_LANGUAGE", "ru"),
 		AppToken:          strings.TrimSpace(os.Getenv("APP_TOKEN")),
+		AdminToken:        strings.TrimSpace(os.Getenv("ADMIN_TOKEN")),
 		TLSDomains:        splitDomains(os.Getenv("TLS_DOMAIN")),
 		ACMEEmail:         strings.TrimSpace(os.Getenv("ACME_EMAIL")),
 		HTTPSPort:         envDefault("HTTPS_PORT", "443"),
@@ -152,6 +172,11 @@ func loadConfig() Config {
 		RateLimitPerMin:   envInt("RATE_LIMIT_PER_MIN", 120),
 		MaxUploadMB:       envInt("MAX_UPLOAD_MB", 256),
 		MaxUploadFiles:    envInt("MAX_UPLOAD_FILES", 10),
+		PriceInMiss:       envFloat("DEEPSEEK_PRICE_INPUT_MISS", 0.28),
+		PriceInHit:        envFloat("DEEPSEEK_PRICE_INPUT_HIT", 0.028),
+		PriceOut:          envFloat("DEEPSEEK_PRICE_OUTPUT", 0.42),
+		PriceSTTPerMin:    envFloat("TRANSCRIBE_PRICE_PER_MIN", 0),
+		PriceVersion:      envDefault("PRICE_VERSION", "v1"),
 	}
 }
 
@@ -169,6 +194,15 @@ func splitDomains(value string) []string {
 func envInt(key string, fallback int) int {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+func envFloat(key string, fallback float64) float64 {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if n, err := strconv.ParseFloat(v, 64); err == nil {
 			return n
 		}
 	}
@@ -244,8 +278,14 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		sessionName = id
 	}
 
+	accountID := anonymousAccount
+	if a, ok := s.accountFromRequest(r); ok {
+		accountID = a.ID
+	}
+
 	st := &SessionState{
 		ID:          id,
+		AccountID:   accountID,
 		State:       "processing",
 		Stage:       "Очередь диагностики",
 		Message:     "Сессия принята…",
@@ -336,9 +376,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		sb.WriteByte('\n')
 	}
 
-	answer, err := s.ds.Chat(r.Context(), []ChatMessage{
+	answer, err := s.chat(r.Context(), st.AccountID, id, "chat", []ChatMessage{
 		{Role: "system", Content: followUpPrompt},
-		{Role: "user", Content: fmt.Sprintf("Данные о движении:\n%s\n\nЗаключение:\n%s\nИстория:\n%s\nНовое сообщение владельца:\n%s", orDefault(st.Facts, "нет данных"), st.Conclusion, sb.String(), text)},
+		{Role: "user", Content: fmt.Sprintf("Автомобиль:\n%s\n\nДанные о движении:\n%s\n\nЗаключение:\n%s\nИстория:\n%s\nНовое сообщение владельца:\n%s", orDefault(st.Car, "нет данных"), orDefault(st.Facts, "нет данных"), st.Conclusion, sb.String(), text)},
 	}, false)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -350,6 +390,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			HistoryItem{Role: "user", Text: text},
 			HistoryItem{Role: "assistant", Text: answer},
 		)
+		appendTranscript(st, "user", text)
+		appendTranscript(st, "assistant", answer)
 		st.UpdatedAt = now()
 	})
 
@@ -418,7 +460,7 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	prompt := fmt.Sprintf("Данные о движении:\n%s\n\nТекущее заключение:\n%s\n\nДиалог с владельцем:\n%s\n\nОбнови итоговое заключение с учётом диалога и верни JSON по заданной схеме.",
 		orDefault(st.Facts, "нет данных"), st.Conclusion, orDefault(sb.String(), "диалога не было"))
 
-	answer, err := s.ds.Chat(r.Context(), []ChatMessage{
+	answer, err := s.chat(r.Context(), st.AccountID, id, "finalize", []ChatMessage{
 		{Role: "system", Content: finalizePrompt},
 		{Role: "user", Content: prompt},
 	}, true)
@@ -436,10 +478,23 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	if doc.Conclusion == "" {
 		doc.Conclusion = result.Conclusion
 	}
+	effective := result.Conclusion
+	if doc.Conclusion != "" {
+		effective = doc.Conclusion
+	}
+	if effective == "" {
+		effective = st.Conclusion
+	}
 	s.store.Update(id, func(st *SessionState) {
 		st.Document = doc
-		if result.Conclusion != "" {
-			st.Conclusion = result.Conclusion
+		if effective != "" {
+			st.Conclusion = effective
+		}
+		for i := len(st.Transcript) - 1; i >= 0; i-- {
+			if st.Transcript[i].Role == "assistant" && strings.HasPrefix(st.Transcript[i].Text, "Заключение:\n") {
+				st.Transcript[i].Text = "Заключение:\n" + effective
+				break
+			}
 		}
 		st.UpdatedAt = now()
 	})

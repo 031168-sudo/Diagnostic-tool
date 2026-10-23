@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,25 @@ type Account struct {
 
 type accountsFile struct {
 	Accounts []*Account `json:"accounts"`
+}
+
+// AdminClient is a safe snapshot: authentication tokens must never be listed.
+type AdminClient struct {
+	AccountID         string `json:"accountId"`
+	CreatedAt         string `json:"createdAt"`
+	Credits           int    `json:"credits"`
+	SubscriptionUntil string `json:"subscriptionUntil"`
+}
+
+func (s *AccountStore) Clients() []AdminClient {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clients := make([]AdminClient, 0, len(s.byID))
+	for _, a := range s.byID {
+		clients = append(clients, AdminClient{a.ID, a.CreatedAt, a.Credits, a.SubscriptionUntil})
+	}
+	sort.Slice(clients, func(i, j int) bool { return clients[i].AccountID < clients[j].AccountID })
+	return clients
 }
 
 type transferCode struct {
@@ -192,12 +212,16 @@ type publicAccount struct {
 	Token             string `json:"token,omitempty"`
 	Credits           int    `json:"credits"`
 	SubscriptionUntil string `json:"subscriptionUntil,omitempty"`
+	SpentMicros       int64  `json:"spentMicros"`
 }
 
-func publicAccountOf(a *Account, withToken bool) publicAccount {
+func (s *Server) publicAccountOf(a *Account, withToken bool) publicAccount {
 	pa := publicAccount{AccountID: a.ID, Credits: a.Credits, SubscriptionUntil: a.SubscriptionUntil}
 	if withToken {
 		pa.Token = a.Token
+	}
+	if s.usage != nil {
+		pa.SpentMicros = s.usage.Totals(a.ID).CostMicros
 	}
 	return pa
 }
@@ -220,7 +244,7 @@ func (s *Server) handleAccountRegister(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, publicAccountOf(a, true))
+	writeJSON(w, http.StatusOK, s.publicAccountOf(a, true))
 }
 
 func (s *Server) handleAccountMe(w http.ResponseWriter, r *http.Request) {
@@ -229,7 +253,7 @@ func (s *Server) handleAccountMe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Неизвестный аккаунт"})
 		return
 	}
-	writeJSON(w, http.StatusOK, publicAccountOf(a, false))
+	writeJSON(w, http.StatusOK, s.publicAccountOf(a, false))
 }
 
 func (s *Server) handleAccountTransferCreate(w http.ResponseWriter, r *http.Request) {
@@ -256,5 +280,5 @@ func (s *Server) handleAccountTransferRedeem(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, publicAccountOf(a, true))
+	writeJSON(w, http.StatusOK, s.publicAccountOf(a, true))
 }

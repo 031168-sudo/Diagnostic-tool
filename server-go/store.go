@@ -25,12 +25,13 @@ type HistoryItem struct {
 }
 
 type SessionState struct {
-	ID          string        `json:"id"`
-	State       string        `json:"state"`
-	Stage       string        `json:"stage"`
-	Message     string        `json:"message"`
-	Question    string        `json:"question"`
-	Options     []string      `json:"options"`
+	ID          string         `json:"id"`
+	AccountID   string         `json:"accountId,omitempty"`
+	State       string         `json:"state"`
+	Stage       string         `json:"stage"`
+	Message     string         `json:"message"`
+	Question    string         `json:"question"`
+	Options     []string       `json:"options"`
 	Conclusion  string         `json:"conclusion"`
 	Document    *ConclusionDoc `json:"document,omitempty"`
 	Facts       string         `json:"facts,omitempty"`
@@ -39,6 +40,7 @@ type SessionState struct {
 	SessionName string         `json:"sessionName"`
 	Files       []FileInfo     `json:"files"`
 	History     []HistoryItem  `json:"history"`
+	Transcript  []HistoryItem  `json:"transcript,omitempty"`
 	CreatedAt   string         `json:"createdAt"`
 	UpdatedAt   string         `json:"updatedAt"`
 }
@@ -53,6 +55,7 @@ type PublicState struct {
 	Conclusion string         `json:"conclusion"`
 	Document   *ConclusionDoc `json:"document,omitempty"`
 	PdfURL     string         `json:"pdfUrl"`
+	Transcript []HistoryItem  `json:"transcript"`
 }
 
 func (s *SessionState) Public() PublicState {
@@ -64,6 +67,10 @@ func (s *SessionState) Public() PublicState {
 	if options == nil {
 		options = []string{}
 	}
+	transcript := s.Transcript
+	if transcript == nil {
+		transcript = []HistoryItem{}
+	}
 	return PublicState{
 		ID:         s.ID,
 		State:      s.State,
@@ -74,6 +81,7 @@ func (s *SessionState) Public() PublicState {
 		Conclusion: s.Conclusion,
 		Document:   s.Document,
 		PdfURL:     pdfURL,
+		Transcript: transcript,
 	}
 }
 

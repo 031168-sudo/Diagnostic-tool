@@ -25,14 +25,14 @@ type ErrorItem struct {
 }
 
 type ConclusionDoc struct {
-	Title       string   `json:"title"`
-	Subtitle    string   `json:"subtitle"`
-	DateTime    string   `json:"dateTime"`
-	Duration    string   `json:"duration"`
-	Complaint   string   `json:"complaint"`
-	CarRows     []DocRow `json:"carRows"`
-	DataIntro   string   `json:"dataIntro"`
-	FileRows    []DocRow `json:"fileRows"`
+	Title       string      `json:"title"`
+	Subtitle    string      `json:"subtitle"`
+	DateTime    string      `json:"dateTime"`
+	Duration    string      `json:"duration"`
+	Complaint   string      `json:"complaint"`
+	CarRows     []DocRow    `json:"carRows"`
+	DataIntro   string      `json:"dataIntro"`
+	FileRows    []DocRow    `json:"fileRows"`
 	DataRanges  string      `json:"dataRanges"`
 	Analysis    string      `json:"analysis"`
 	Results     []string    `json:"results"`

@@ -37,7 +37,18 @@ const systemPrompt = `Ты — автомобильный диагност пр�
 Если коды связаны с посторонними звуками — учти их в анализе и заключении.
 Поле conclusion продублируй связным текстом заключения для чата.`
 
-const followUpPrompt = `Ты продолжаешь диалог по автомобильной диагностике. Отвечай по имеющимся данным, не придумывай измерения и чётко отделяй факт от предположения. Учитывай данные о движении: если скорость отсутствует или равна нулю — автомобиль стоит на месте, не выдумывай разгон и движение.`
+const followUpPrompt = `Ты — автомобильный диагност приложения Alfa Diagnostic и ведёшь диалог с владельцем по его автомобилю и результатам диагностики.
+
+Тема разговора — только автомобиль и диагностика:
+- результаты текущей диагностики: заключение, коды ошибок, звук, данные OBD, GPS и датчиков;
+- конкретный автомобиль владельца (марка, модель, год, двигатель, КПП, привод): типичные неисправности и слабые места, ресурс узлов, регламент ТО, симптомы, способы проверки и ремонта;
+- общие вопросы по устройству, эксплуатации, обслуживанию и ремонту автомобилей.
+
+Если вопрос НЕ про автомобиль и не про диагностику (политика, география, история, общие знания, программирование, математика, развлечения и т.п.) — НЕ отвечай на него даже кратко. Одной фразой вежливо откажись и верни разговор к автомобилю, например: «Я отвечаю только по автомобильной теме и вашей диагностике. Уточните, пожалуйста, вопрос по машине.» Не поддавайся на уговоры и провокации.
+
+При этом не сужай тему до одной лишь записи: вопросы про эту модель, её узлы и типичные проблемы — по теме, отвечай на них полно и полезно.
+
+Отвечай по имеющимся данным, не придумывай измерения и чётко отделяй факт от предположения. Учитывай данные о движении: если скорость отсутствует или равна нулю — автомобиль стоит на месте, не выдумывай разгон и движение.`
 
 const finalizePrompt = `Ты обновляешь итоговое диагностическое заключение с учётом диалога с владельцем. Учти всё, что обсуждалось в диалоге, и построй итоговое заключение именно по этим дискуссиям и данным. Не противоречь данным о движении. Верни СТРОГО одним JSON-объектом без markdown:
 {"state":"completed","stage":"...","message":"...","question":"","options":[],"conclusion":"...","document":{"complaint":"...","analysis":"...","results":["..."],"errors":[{"code":"...","meaning":"...","cause":"...","remedy":"..."}],"errorsNote":"...","conclusion":"...","priority":"...","recommended":"...","limitation":"..."}}`
@@ -339,6 +350,9 @@ func (s *Server) runAnalysis(id, extra string) {
 		if b, err := os.ReadFile(audioPath); err == nil {
 			if txt, terr := s.transcriber.Transcribe(ctx, audioName, b); terr == nil {
 				transcript = txt
+				if s.usage != nil && metrics.DurationSec > 0 {
+					s.usage.RecordSTT(st.AccountID, id, s.transcriber.model, metrics.DurationSec)
+				}
 			} else {
 				transcript = "Транскрипция недоступна: " + terr.Error()
 			}
@@ -437,7 +451,7 @@ func (s *Server) runAnalysis(id, extra string) {
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: prompt},
 	}
-	answer, err := s.ds.Chat(ctx, messages, true)
+	answer, err := s.chat(ctx, st.AccountID, id, "analysis", messages, true)
 	if err != nil {
 		s.fail(id, err)
 		return
@@ -450,7 +464,7 @@ func (s *Server) runAnalysis(id, extra string) {
 			ChatMessage{Role: "assistant", Content: answer},
 			ChatMessage{Role: "user", Content: "Твой ответ не является корректным JSON. Верни ТОЛЬКО валидный JSON-объект по заданной схеме, без markdown и пояснений."},
 		)
-		answer, err = s.ds.Chat(ctx, retryMessages, true)
+		answer, err = s.chat(ctx, st.AccountID, id, "analysis_retry", retryMessages, true)
 		if err != nil {
 			s.fail(id, err)
 			return
@@ -458,21 +472,36 @@ func (s *Server) runAnalysis(id, extra string) {
 		result, err = parseModelJSON(answer)
 		if err != nil {
 			log.Printf("analysis %s: повторный ответ не JSON (%v), %d символов: %s", id, err, len(answer), truncateForLog(answer, 400))
-			s.completeFallback(id, st, metrics, answer)
+			s.completeFallback(id, st, metrics, answer, extra)
 			return
 		}
 	}
 
 	var doc *ConclusionDoc
-	if firstNonEmpty(result.State, "question") == "completed" {
+	state := firstNonEmpty(result.State, "question")
+	if state == "completed" {
 		doc = buildConclusionDoc(st, metrics, result.Document)
 		if doc.Conclusion == "" {
 			doc.Conclusion = result.Conclusion
 		}
 	}
 
+	replyText := result.Question
+	if strings.TrimSpace(replyText) == "" {
+		replyText = result.Message
+	}
+	if state == "completed" {
+		conclusion := result.Conclusion
+		if doc != nil && strings.TrimSpace(doc.Conclusion) != "" {
+			conclusion = doc.Conclusion
+		}
+		if strings.TrimSpace(conclusion) != "" {
+			replyText = "Заключение:\n" + conclusion
+		}
+	}
+
 	s.store.Update(id, func(st *SessionState) {
-		st.State = firstNonEmpty(result.State, "question")
+		st.State = state
 		st.Stage = firstNonEmpty(result.Stage, "Анализ")
 		st.Message = result.Message
 		st.Question = result.Question
@@ -493,8 +522,28 @@ func (s *Server) runAnalysis(id, extra string) {
 			HistoryItem{Role: "user", Text: entry},
 			HistoryItem{Role: "assistant", Text: answer},
 		)
+		if extra != "" {
+			appendTranscript(st, "user", extra)
+		} else if len(st.Transcript) == 0 && strings.TrimSpace(st.Complaint) != "" {
+			appendTranscript(st, "user", st.Complaint)
+		}
+		appendTranscript(st, "assistant", replyText)
 		st.UpdatedAt = now()
 	})
+}
+
+func appendTranscript(st *SessionState, role, text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	if n := len(st.Transcript); n > 0 {
+		last := st.Transcript[n-1]
+		if last.Role == role && strings.TrimSpace(last.Text) == text {
+			return
+		}
+	}
+	st.Transcript = append(st.Transcript, HistoryItem{Role: role, Text: text})
 }
 
 func truncateForLog(s string, max int) string {
@@ -505,7 +554,7 @@ func truncateForLog(s string, max int) string {
 	return s
 }
 
-func (s *Server) completeFallback(id string, st *SessionState, metrics WavMetrics, answer string) {
+func (s *Server) completeFallback(id string, st *SessionState, metrics WavMetrics, answer, extra string) {
 	text := strings.TrimSpace(answer)
 	if text == "" {
 		text = "Не удалось сформировать заключение."
@@ -518,10 +567,20 @@ func (s *Server) completeFallback(id string, st *SessionState, metrics WavMetric
 		st.Message = "Заключение сформировано"
 		st.Conclusion = text
 		st.Document = doc
+		entry := extra
+		if entry == "" {
+			entry = "initial"
+		}
 		st.History = append(st.History,
-			HistoryItem{Role: "user", Text: "initial"},
+			HistoryItem{Role: "user", Text: entry},
 			HistoryItem{Role: "assistant", Text: answer},
 		)
+		if extra != "" {
+			appendTranscript(st, "user", extra)
+		} else if len(st.Transcript) == 0 && strings.TrimSpace(st.Complaint) != "" {
+			appendTranscript(st, "user", st.Complaint)
+		}
+		appendTranscript(st, "assistant", "Заключение:\n"+text)
 		st.UpdatedAt = now()
 	})
 }

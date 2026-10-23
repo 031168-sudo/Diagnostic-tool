@@ -12,10 +12,10 @@ import (
 )
 
 var (
-	existNameRe    = regexp.MustCompile(`(?s)<h1[^>]*class="car-info__car-name"[^>]*>\s*([^<]+?)\s*</h1>`)
-	existYearRe    = regexp.MustCompile(`(?s)car-info__car-years"[^>]*>\s*(\d{4})`)
-	existDisplRe   = regexp.MustCompile(`^\d\.\d(L)?$`)
-	existDriveRe   = regexp.MustCompile(`^(4WD|AWD|2WD|FWD|RWD|4X4|4X2)$`)
+	existNameRe  = regexp.MustCompile(`(?s)<h1[^>]*class="car-info__car-name"[^>]*>\s*([^<]+?)\s*</h1>`)
+	existYearRe  = regexp.MustCompile(`(?s)car-info__car-years"[^>]*>\s*(\d{4})`)
+	existDisplRe = regexp.MustCompile(`^\d\.\d(L)?$`)
+	existDriveRe = regexp.MustCompile(`^(4WD|AWD|2WD|FWD|RWD|4X4|4X2)$`)
 )
 
 const browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"

@@ -17,6 +17,14 @@ type ChatMessage struct {
 	Content string `json:"content"`
 }
 
+type Usage struct {
+	PromptTokens          int `json:"prompt_tokens"`
+	CompletionTokens      int `json:"completion_tokens"`
+	TotalTokens           int `json:"total_tokens"`
+	PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+	PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
+}
+
 type DeepSeek struct {
 	http    *http.Client
 	baseURL string
@@ -37,7 +45,7 @@ func (d *DeepSeek) Enabled() bool {
 	return d != nil && d.apiKey != "" && d.baseURL != ""
 }
 
-func (d *DeepSeek) Chat(ctx context.Context, messages []ChatMessage, jsonMode bool) (string, error) {
+func (d *DeepSeek) Chat(ctx context.Context, messages []ChatMessage, jsonMode bool) (string, Usage, error) {
 	body := map[string]any{
 		"model":      d.model,
 		"messages":   messages,
@@ -49,25 +57,25 @@ func (d *DeepSeek) Chat(ctx context.Context, messages []ChatMessage, jsonMode bo
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
-		return "", err
+		return "", Usage{}, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.baseURL+"/chat/completions", bytes.NewReader(payload))
 	if err != nil {
-		return "", err
+		return "", Usage{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+d.apiKey)
 
 	resp, err := d.http.Do(req)
 	if err != nil {
-		return "", err
+		return "", Usage{}, err
 	}
 	defer resp.Body.Close()
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
-		return "", err
+		return "", Usage{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
 		var wrap struct {
@@ -76,9 +84,9 @@ func (d *DeepSeek) Chat(ctx context.Context, messages []ChatMessage, jsonMode bo
 			} `json:"error"`
 		}
 		if json.Unmarshal(data, &wrap) == nil && wrap.Error.Message != "" {
-			return "", fmt.Errorf("%s", wrap.Error.Message)
+			return "", Usage{}, fmt.Errorf("%s", wrap.Error.Message)
 		}
-		return "", fmt.Errorf("DeepSeek HTTP %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		return "", Usage{}, fmt.Errorf("DeepSeek HTTP %s: %s", resp.Status, strings.TrimSpace(string(data)))
 	}
 
 	var out struct {
@@ -87,14 +95,15 @@ func (d *DeepSeek) Chat(ctx context.Context, messages []ChatMessage, jsonMode bo
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage Usage `json:"usage"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
-		return "", err
+		return "", Usage{}, err
 	}
 	if len(out.Choices) == 0 {
-		return "", fmt.Errorf("DeepSeek вернул пустой ответ")
+		return "", Usage{}, fmt.Errorf("DeepSeek вернул пустой ответ")
 	}
-	return out.Choices[0].Message.Content, nil
+	return out.Choices[0].Message.Content, out.Usage, nil
 }
 
 type Transcriber struct {

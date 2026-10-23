@@ -3,6 +3,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY *.go ./
+COPY admin/ ./admin/
 RUN CGO_ENABLED=0 go build -o /out/diagnostic-server .
 
 FROM alpine:3.20
