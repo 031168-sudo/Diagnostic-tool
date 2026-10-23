@@ -15,7 +15,7 @@
     </queries>
     <application android:theme="@style/Theme.DiagnosticTool" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher" android:allowBackup="false" android:supportsRtl="true">
         <activity android:name=".DiagnosticChatActivity" android:screenOrientation="portrait" android:exported="false" />
-        <activity android:name=".AlfaMainActivity" android:screenOrientation="portrait" android:exported="true">
+        <activity android:name=".AlfaMainActivity" android:screenOrientation="unspecified" android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|uiMode" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

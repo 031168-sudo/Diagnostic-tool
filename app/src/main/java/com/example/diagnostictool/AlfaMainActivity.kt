@@ -3,6 +3,7 @@ package com.example.diagnostictool
 import android.Manifest
 import android.content.ContentValues
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -18,6 +19,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -52,6 +54,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
@@ -83,6 +87,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -100,15 +105,27 @@ import com.example.diagnostictool.ui.theme.DiagRed
 import com.example.diagnostictool.ui.theme.DiagWhite
 import com.example.diagnostictool.ui.theme.DiagnosticTheme
 import org.json.JSONArray
+import org.json.JSONObject
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.File
+import java.io.InputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private const val OBD_DISCONNECTED_TEXT = "OBD-адаптер не подключен"
+private const val AUTO_BACKUP_INTERVAL_MS = 10 * 60 * 1000L
 
 private fun formatDuration(totalSec: Int): String = "%d:%02d".format(totalSec / 60, totalSec % 60)
+
+private fun formatDateTime(millis: Long): String =
+    SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(millis))
 
 class AlfaMainActivity : ComponentActivity() {
     private lateinit var ble: TargetElm327Ble
@@ -149,7 +166,7 @@ class AlfaMainActivity : ComponentActivity() {
             }
         }
         override fun onData(values: ObdValues, monotonicNs: Long) {
-            runOnUiThread { obdValuesText = values.toDisplay() }
+            runOnUiThread { obdValues = values.copy(); obdValuesText = values.toDisplay() }
             recorder?.onObd(values, monotonicNs)
         }
         override fun onDevices(devices: List<ObdDevice>) = runOnUiThread { stopObdBusy(); scanCount = null; obdListHint = ""; obdDevices = devices }
@@ -186,12 +203,35 @@ class AlfaMainActivity : ComponentActivity() {
     private val obdPermissionRequest = 10
     private val recordPermissionRequest = 11
 
+    private val backupOpen = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { readBackup(it) }
+    }
+
     private var currentCar by mutableStateOf<Car?>(null)
     private var statusText by mutableStateOf(OBD_DISCONNECTED_TEXT)
+    private var obdValues by mutableStateOf(ObdValues())
     private var obdValuesText by mutableStateOf(ObdValues().toDisplay())
     private var obdConnected by mutableStateOf(false)
     private var scanCount by mutableStateOf<Int?>(null)
     private var showObdLog by mutableStateOf(false)
+    private var dashboardOpen by mutableStateOf(false)
+    private var dashboardPro by mutableStateOf(false)
+    private var dashboardLandscape by mutableStateOf(false)
+    private var tripKm by mutableStateOf(0.0)
+    private var tripSec by mutableStateOf(0)
+    private var lastTripTick = 0L
+    private val tripHandler = Handler(Looper.getMainLooper())
+    private val tripTick = object : Runnable {
+        override fun run() {
+            if (!dashboardOpen) return
+            val now = SystemClock.elapsedRealtime()
+            val dt = if (lastTripTick == 0L) 0.0 else (now - lastTripTick) / 1000.0
+            lastTripTick = now
+            tripSec += 1
+            obdValues.speed?.let { tripKm += it / 3600.0 * dt }
+            tripHandler.postDelayed(this, 1000)
+        }
+    }
     private var errorCodes by mutableStateOf<List<String>>(emptyList())
     private var errorRaw by mutableStateOf("")
     private val obdLog = mutableStateListOf<String>()
@@ -230,19 +270,36 @@ class AlfaMainActivity : ComponentActivity() {
     private var historyDialog by mutableStateOf(false)
     private var historyVersion by mutableStateOf(0)
     private var deleteRecord by mutableStateOf<DiagnosticRecordStore.Record?>(null)
+    private var deleteCar by mutableStateOf<Car?>(null)
     private var postRecordDialog by mutableStateOf<PostRecordState?>(null)
     private var historicalComplaint by mutableStateOf<HistoricalComplaintState?>(null)
+    private var uploadState by mutableStateOf<UploadState?>(null)
 
     private var accountDialog by mutableStateOf(false)
     private var accountCredits by mutableStateOf<Int?>(null)
+    private var accountSpentMicros by mutableStateOf<Long?>(null)
     private var accountSubscription by mutableStateOf("")
     private var accountTransferCode by mutableStateOf<String?>(null)
     private var accountMessage by mutableStateOf<String?>(null)
     private var accountBusy by mutableStateOf(false)
+    private var backupMessage by mutableStateOf<String?>(null)
+    private var restoreConfirm by mutableStateOf(false)
+    private var lastBackupName by mutableStateOf<String?>(null)
+    private var lastBackupTime by mutableStateOf(0L)
+    private var lastRestoreTime by mutableStateOf(0L)
+    private val backupRunning = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val autoBackupHandler = Handler(Looper.getMainLooper())
+    private val autoBackupRunnable = object : Runnable {
+        override fun run() {
+            createBackup(true)
+            autoBackupHandler.postDelayed(this, AUTO_BACKUP_INTERVAL_MS)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         configureObd()
         refreshSavedAdapter()
         appendLog("Файл журнала: ${liveLog.displayPath()}")
@@ -254,7 +311,6 @@ class AlfaMainActivity : ComponentActivity() {
                         carEnabled = currentCar != null,
                         obdConnected = obdConnected,
                         obdValuesText = obdValuesText,
-                        errorCodes = errorCodes,
                         recording = recording,
                         recordElapsedSec = recordElapsedSec,
                         recordStatusText = recordStatusText,
@@ -270,6 +326,7 @@ class AlfaMainActivity : ComponentActivity() {
                         onDisconnect = { disconnectObd() },
                         onConnectSaved = { connectSaved() },
                         onChooseNew = { resetObdData(); connectChooser = true },
+                        onDashboard = { openDashboard() },
                         onToggleRecord = { toggleRecording() },
                         obdLog = obdLog,
                         showObdLog = showObdLog,
@@ -324,17 +381,54 @@ class AlfaMainActivity : ComponentActivity() {
                             onDismiss = { serviceEditor = null }
                         )
                     }
+
+                    if (dashboardOpen) {
+                        if (dashboardPro) {
+                            ProDashboardScreen(
+                                values = obdValues,
+                                connected = obdConnected,
+                                errorCodes = errorCodes,
+                                landscape = dashboardLandscape,
+                                onBack = { dashboardPro = false; ElmSession.extendedPids = false },
+                                onClose = { closeDashboard() }
+                            )
+                        } else {
+                            DashboardScreen(
+                                values = obdValues,
+                                connected = obdConnected,
+                                landscape = dashboardLandscape,
+                                tripKm = tripKm,
+                                tripSec = tripSec,
+                                onToggleOrientation = { toggleDashboardOrientation() },
+                                onResetTrip = { tripKm = 0.0; tripSec = 0; lastTripTick = 0L },
+                                onOpenPro = { dashboardPro = true; ElmSession.extendedPids = true },
+                                onClose = { closeDashboard() }
+                            )
+                        }
+                    }
                 }
 
-                if (firstCarDialog) FirstCarDialog(onAdd = { firstCarDialog = false; showCarEditor(carStore.create(), true) })
+                if (firstCarDialog) FirstCarDialog(
+                    onAdd = { firstCarDialog = false; showCarEditor(carStore.create(), true) },
+                    onRestore = { restoreConfirm = true }
+                )
 
                 if (carsDialog) CarsDialog(
                     cars = carStore.all(), selectedCar = currentCar,
                     onSelect = { car -> carStore.select(car.id); currentCar = carStore.selected(); carsDialog = false },
-                    onEditSelected = { currentCar?.let { showCarEditor(it, false) }; carsDialog = false },
+                    onEdit = { car -> showCarEditor(car, false); carsDialog = false },
+                    onDelete = { car -> deleteCar = car },
                     onAdd = { showCarEditor(carStore.create(), true); carsDialog = false },
                     onClose = { carsDialog = false }
                 )
+
+                deleteCar?.let { car ->
+                    DeleteCarDialog(
+                        car = car,
+                        onConfirm = { deleteCarCompletely(car); deleteCar = null },
+                        onCancel = { deleteCar = null }
+                    )
+                }
 
                 obdDevices?.let { devices ->
                     ObdDevicesDialog(devices = devices, hint = obdListHint, onSelect = { d ->
@@ -381,13 +475,29 @@ class AlfaMainActivity : ComponentActivity() {
                 if (accountDialog) AccountDialog(
                     accountId = accountStore.accountId,
                     credits = accountCredits,
+                    spentMicros = accountSpentMicros,
                     subscriptionUntil = accountSubscription,
                     transferCode = accountTransferCode,
                     busy = accountBusy,
                     message = accountMessage,
+                    backupMessage = backupMessage,
+                    lastBackupName = lastBackupName,
+                    lastBackupTime = lastBackupTime,
+                    lastRestoreTime = lastRestoreTime,
+                    backupLocation = backupLocationLabel(),
                     onCreateCode = { createTransferCode() },
                     onRedeem = { redeemTransferCode(it) },
-                    onClose = { accountDialog = false; accountTransferCode = null; accountMessage = null }
+                    onBackup = { backupMessage = null; createBackup(false) },
+                    onRestore = { restoreConfirm = true },
+                    onClose = { accountDialog = false; accountTransferCode = null; accountMessage = null; backupMessage = null }
+                )
+
+                if (restoreConfirm) ConfirmRestoreDialog(
+                    onConfirm = {
+                        restoreConfirm = false
+                        backupOpen.launch(arrayOf("application/json", "text/plain", "*/*"))
+                    },
+                    onCancel = { restoreConfirm = false }
                 )
 
                 if (historyDialog) currentCar?.let { car ->
@@ -425,6 +535,14 @@ class AlfaMainActivity : ComponentActivity() {
                     )
                 }
 
+                uploadState?.let { state ->
+                    UploadProgressDialog(
+                        state = state,
+                        onRetry = { performUpload(state) },
+                        onClose = { uploadState = null }
+                    )
+                }
+
                 if (showRecordWarning) RecordWarningDialog(
                     noShow = recordWarningNoShow,
                     onNoShowChange = { recordWarningNoShow = it },
@@ -443,6 +561,8 @@ class AlfaMainActivity : ComponentActivity() {
         showWelcome = !settingsPrefs.getBoolean("welcome_shown", false)
         if (!showWelcome) enterCarFlow()
         if (!accountStore.isRegistered) registerAccount() else refreshAccount()
+        loadBackupInfo()
+        autoBackupHandler.postDelayed(autoBackupRunnable, 4000)
     }
 
     private fun enterCarFlow() {
@@ -625,6 +745,7 @@ class AlfaMainActivity : ComponentActivity() {
                 result.onSuccess { acc ->
                     accountStore.save(acc.accountId, acc.token)
                     accountCredits = acc.credits
+                    accountSpentMicros = acc.spentMicros
                     accountSubscription = acc.subscriptionUntil
                     accountMessage = null
                 }.onFailure { e -> accountMessage = "Не удалось создать аккаунт: ${e.message}" }
@@ -641,6 +762,7 @@ class AlfaMainActivity : ComponentActivity() {
                 accountBusy = false
                 result.onSuccess { acc ->
                     accountCredits = acc.credits
+                    accountSpentMicros = acc.spentMicros
                     accountSubscription = acc.subscriptionUntil
                 }.onFailure { e -> accountMessage = "Не удалось получить данные аккаунта: ${e.message}" }
             }
@@ -670,11 +792,277 @@ class AlfaMainActivity : ComponentActivity() {
                 result.onSuccess { acc ->
                     accountStore.save(acc.accountId, acc.token)
                     accountCredits = acc.credits
+                    accountSpentMicros = acc.spentMicros
                     accountSubscription = acc.subscriptionUntil
                     accountTransferCode = null
                     accountMessage = "Аккаунт привязан"
                 }.onFailure { e -> accountMessage = "Код не принят: ${e.message}" }
             }
+        }
+    }
+
+    private fun buildBackupJson(): String {
+        val carsPrefs = getSharedPreferences("cars", MODE_PRIVATE)
+        val root = JSONObject().apply {
+            put("app", "AlfaDiag")
+            put("version", 2)
+            put("createdAt", System.currentTimeMillis())
+            put("cars", JSONArray(carsPrefs.getString("items", "[]")))
+            put("selectedCarId", carsPrefs.getString("selected_id", "") ?: "")
+            put("records", JSONArray(recordStore.rawJson()))
+            put("service", JSONArray(getSharedPreferences("service_book", MODE_PRIVATE).getString("items", "[]")))
+            put("settings", JSONObject().apply {
+                val sp = getSharedPreferences("settings", MODE_PRIVATE)
+                listOf("hide_record_warning", "welcome_shown", "last_obd", "last_kind", "last_name", "last_addr", "last_wifi").forEach { k ->
+                    when (val v = sp.all[k]) {
+                        is Boolean -> put(k, v)
+                        is String -> put(k, v)
+                        is Int -> put(k, v)
+                    }
+                }
+            })
+        }
+        return root.toString(2)
+    }
+
+    private fun mediaFiles(relativePath: String, likeName: String): List<Pair<String, Uri>> {
+        if (Build.VERSION.SDK_INT < 29) return emptyList()
+        val out = mutableListOf<Pair<String, Uri>>()
+        val projection = arrayOf(MediaStore.Downloads._ID, MediaStore.Downloads.DISPLAY_NAME)
+        val selection = "${MediaStore.Downloads.RELATIVE_PATH} LIKE ? AND ${MediaStore.Downloads.DISPLAY_NAME} LIKE ?"
+        contentResolver.query(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI, projection, selection,
+            arrayOf("$relativePath%", likeName), null
+        )?.use {
+            while (it.moveToNext()) {
+                val name = it.getString(1) ?: continue
+                out += name to Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, it.getLong(0).toString())
+            }
+        }
+        return out
+    }
+
+    private fun backupSignature(sessions: Int, pdfs: Int): String {
+        val cars = getSharedPreferences("cars", MODE_PRIVATE).getString("items", "[]")
+        val service = getSharedPreferences("service_book", MODE_PRIVATE).getString("items", "[]")
+        return ("$cars|${recordStore.rawJson()}|$service|$sessions|$pdfs").hashCode().toString()
+    }
+
+    private fun writeZip(os: java.io.OutputStream, json: String, sessions: List<Pair<String, Uri>>, pdfs: List<Pair<String, Uri>>) {
+        ZipOutputStream(BufferedOutputStream(os)).use { zip ->
+            zip.putNextEntry(ZipEntry("backup.json"))
+            zip.write(json.toByteArray(Charsets.UTF_8))
+            zip.closeEntry()
+            sessions.forEach { (name, u) ->
+                zip.putNextEntry(ZipEntry("sessions/$name"))
+                contentResolver.openInputStream(u)?.use { it.copyTo(zip) }
+                zip.closeEntry()
+            }
+            pdfs.forEach { (name, u) ->
+                zip.putNextEntry(ZipEntry("conclusions/$name"))
+                contentResolver.openInputStream(u)?.use { it.copyTo(zip) }
+                zip.closeEntry()
+            }
+        }
+    }
+
+    private fun createBackup(auto: Boolean) {
+        if (!backupRunning.compareAndSet(false, true)) return
+        if (!auto) backupMessage = "Готовлю копию…"
+        Thread {
+            try {
+                val json = buildBackupJson()
+                val sessions = mediaFiles("Download/Alfa Diagnostic/sessions", "%.adp")
+                val pdfs = mediaFiles("Download/Alfa Diagnostic/conclusions", "Заключение_%.pdf")
+                val signature = backupSignature(sessions.size, pdfs.size)
+                if (auto && signature == getSharedPreferences("backup", MODE_PRIVATE).getString("last_signature", null)) {
+                    backupRunning.set(false)
+                    return@Thread
+                }
+                val name = "alfadiag-backup-" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".zip"
+                if (Build.VERSION.SDK_INT >= 29) {
+                    val values = ContentValues().apply {
+                        put(MediaStore.Downloads.DISPLAY_NAME, name)
+                        put(MediaStore.Downloads.MIME_TYPE, "application/zip")
+                        put(MediaStore.Downloads.RELATIVE_PATH, "Download/Alfa Diagnostic/backups")
+                        put(MediaStore.Downloads.IS_PENDING, 1)
+                    }
+                    val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                        ?: error("не удалось создать файл копии")
+                    contentResolver.openOutputStream(uri)?.use { os -> writeZip(os, json, sessions, pdfs) }
+                        ?: error("не удалось записать копию")
+                    contentResolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+                    pruneBackups(keep = 3)
+                } else {
+                    val dir = File(getExternalFilesDir(null), "backups").apply { mkdirs() }
+                    File(dir, name).outputStream().use { os -> writeZip(os, json, sessions, pdfs) }
+                }
+                getSharedPreferences("backup", MODE_PRIVATE).edit()
+                    .putString("last_name", name)
+                    .putLong("last_time", System.currentTimeMillis())
+                    .putString("last_signature", signature)
+                    .apply()
+                runOnUiThread {
+                    loadBackupInfo()
+                    if (!auto) {
+                        backupMessage = "Копия сохранена"
+                        Toast.makeText(this, "Копия сохранена: $name", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    if (!auto) {
+                        backupMessage = "Ошибка сохранения: ${e.message}"
+                        Toast.makeText(this, "Ошибка сохранения: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            } finally {
+                backupRunning.set(false)
+            }
+        }.start()
+    }
+
+    private fun pruneBackups(keep: Int) {
+        if (Build.VERSION.SDK_INT < 29) return
+        val items = mutableListOf<Pair<String, Long>>()
+        contentResolver.query(
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+            arrayOf(MediaStore.Downloads._ID, MediaStore.Downloads.DISPLAY_NAME),
+            "${MediaStore.Downloads.RELATIVE_PATH} LIKE ? AND ${MediaStore.Downloads.DISPLAY_NAME} LIKE ?",
+            arrayOf("Download/Alfa Diagnostic/backups%", "alfadiag-backup-%.zip"), null
+        )?.use {
+            while (it.moveToNext()) items += (it.getString(1) ?: "") to it.getLong(0)
+        }
+        items.sortedByDescending { it.first }.drop(keep).forEach { (_, id) ->
+            runCatching { contentResolver.delete(Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id.toString()), null, null) }
+        }
+    }
+
+    private fun loadBackupInfo() {
+        val p = getSharedPreferences("backup", MODE_PRIVATE)
+        lastBackupName = p.getString("last_name", null)
+        lastBackupTime = p.getLong("last_time", 0L)
+        lastRestoreTime = p.getLong("last_restore", 0L)
+    }
+
+    private fun backupLocationLabel(): String =
+        if (Build.VERSION.SDK_INT >= 29) "Download/Alfa Diagnostic/backups"
+        else (getExternalFilesDir(null)?.absolutePath ?: "внутренняя память") + "/backups"
+
+    private fun readBackup(uri: Uri) {
+        backupMessage = "Восстанавливаю…"
+        Thread {
+            try {
+                val sessionUris = mutableMapOf<String, String>()
+                val pdfUris = mutableMapOf<String, String>()
+                var jsonText: String? = null
+                contentResolver.openInputStream(uri)?.use { raw ->
+                    val input = BufferedInputStream(raw)
+                    input.mark(2)
+                    val b1 = input.read()
+                    val b2 = input.read()
+                    input.reset()
+                    if (b1 == 'P'.code && b2 == 'K'.code) {
+                        ZipInputStream(input).use { zin ->
+                            var entry = zin.nextEntry
+                            while (entry != null) {
+                                when {
+                                    entry.name == "backup.json" ->
+                                        jsonText = zin.readBytes().toString(Charsets.UTF_8)
+                                    entry.name.startsWith("sessions/") -> {
+                                        val name = entry.name.removePrefix("sessions/")
+                                        saveToDownloads("Download/Alfa Diagnostic/sessions", name, "application/octet-stream", zin)
+                                            ?.let { sessionUris[name.removeSuffix(".adp")] = it }
+                                    }
+                                    entry.name.startsWith("conclusions/") -> {
+                                        val name = entry.name.removePrefix("conclusions/")
+                                        saveToDownloads("Download/Alfa Diagnostic/conclusions", name, "application/pdf", zin)
+                                            ?.let { pdfUris[name.removePrefix("Заключение_").removeSuffix(".pdf")] = it }
+                                    }
+                                }
+                                zin.closeEntry()
+                                entry = zin.nextEntry
+                            }
+                        }
+                    } else {
+                        jsonText = input.readBytes().toString(Charsets.UTF_8)
+                    }
+                } ?: error("не удалось прочитать файл")
+                val text = jsonText ?: error("в архиве нет backup.json")
+                runOnUiThread { applyBackup(text, sessionUris, pdfUris) }
+            } catch (e: Exception) {
+                runOnUiThread { backupMessage = "Ошибка восстановления: ${e.message}" }
+            }
+        }.start()
+    }
+
+    private fun saveToDownloads(relativePath: String, name: String, mime: String, input: InputStream): String? {
+        if (Build.VERSION.SDK_INT < 29) return null
+        return try {
+            contentResolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.Downloads._ID),
+                "${MediaStore.Downloads.DISPLAY_NAME}=? AND ${MediaStore.Downloads.RELATIVE_PATH} LIKE ?",
+                arrayOf(name, "$relativePath%"), null
+            )?.use {
+                while (it.moveToNext()) {
+                    runCatching { contentResolver.delete(Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, it.getLong(0).toString()), null, null) }
+                }
+            }
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, name)
+                put(MediaStore.Downloads.MIME_TYPE, mime)
+                put(MediaStore.Downloads.RELATIVE_PATH, relativePath)
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val u = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
+            contentResolver.openOutputStream(u)?.use { input.copyTo(it) }
+            contentResolver.update(u, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+            u.toString()
+        } catch (e: Exception) { null }
+    }
+
+    private fun applyBackup(text: String, sessionUris: Map<String, String>, pdfUris: Map<String, String>) {
+        try {
+            val root = JSONObject(text)
+            require(root.optString("app") == "AlfaDiag") { "это не файл резервной копии AlfaDiag" }
+            getSharedPreferences("cars", MODE_PRIVATE).edit()
+                .putString("items", (root.optJSONArray("cars") ?: JSONArray()).toString())
+                .putString("selected_id", root.optString("selectedCarId"))
+                .apply()
+            recordStore.replaceRaw((root.optJSONArray("records") ?: JSONArray()).toString())
+            getSharedPreferences("service_book", MODE_PRIVATE).edit()
+                .putString("items", (root.optJSONArray("service") ?: JSONArray()).toString())
+                .apply()
+            root.optJSONObject("settings")?.let { st ->
+                val editor = getSharedPreferences("settings", MODE_PRIVATE).edit()
+                st.keys().forEach { k ->
+                    when (val v = st.get(k)) {
+                        is Boolean -> editor.putBoolean(k, v)
+                        is String -> editor.putString(k, v)
+                        is Int -> editor.putInt(k, v)
+                    }
+                }
+                editor.apply()
+            }
+            sessionUris.forEach { (session, u) -> recordStore.setFileUris(session, u, pdfUris[session]) }
+            pdfUris.forEach { (session, u) -> if (!sessionUris.containsKey(session)) recordStore.setFileUris(session, null, u) }
+            if (carStore.selected() == null) carStore.all().firstOrNull()?.let { carStore.select(it.id) }
+            currentCar = carStore.selected()
+            if (carStore.all().isNotEmpty()) {
+                firstCarDialog = false
+                carsDialog = false
+            }
+            historyVersion++
+            serviceVersion++
+            getSharedPreferences("backup", MODE_PRIVATE).edit()
+                .putLong("last_restore", System.currentTimeMillis())
+                .apply()
+            loadBackupInfo()
+            backupMessage = "Данные и файлы восстановлены"
+            Toast.makeText(this, "Данные и файлы восстановлены", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            backupMessage = "Ошибка восстановления: ${e.message}"
+            Toast.makeText(this, "Ошибка восстановления: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -689,7 +1077,16 @@ class AlfaMainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT < 29) return emptyList()
         val result = mutableListOf<Uri>()
         contentResolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.Downloads._ID), "${MediaStore.Downloads.DISPLAY_NAME}=?", arrayOf("$sessionName.adp"), null)?.use {
-            if (it.moveToFirst()) result += Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, it.getLong(0).toString())
+            while (it.moveToNext()) result += Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, it.getLong(0).toString())
+        }
+        return result
+    }
+
+    private fun findPdfUris(sessionName: String): List<Uri> {
+        if (Build.VERSION.SDK_INT < 29) return emptyList()
+        val result = mutableListOf<Uri>()
+        contentResolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.Downloads._ID), "${MediaStore.Downloads.DISPLAY_NAME}=?", arrayOf("Заключение_$sessionName.pdf"), null)?.use {
+            while (it.moveToNext()) result += Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, it.getLong(0).toString())
         }
         return result
     }
@@ -716,6 +1113,25 @@ class AlfaMainActivity : ComponentActivity() {
         recordStore.delete(record.sessionName)
     }
 
+    private fun deleteCarCompletely(car: Car) {
+        recordStore.forCar(car.id).forEach { record ->
+            val stored = record.sessionUri?.let { runCatching { Uri.parse(it) }.getOrNull() }
+            val uris = mutableListOf<Uri>()
+            stored?.let { uris += it }
+            uris += findSessionUris(record.sessionName)
+            uris.distinct().forEach { runCatching { deleteUri(it) } }
+            record.aiResponseUri?.let { runCatching { deleteUri(Uri.parse(it)) } }
+            findPdfUris(record.sessionName).forEach { runCatching { deleteUri(it) } }
+            recordStore.delete(record.sessionName)
+        }
+        serviceStore.forCar(car.id).forEach { serviceStore.delete(it.id) }
+        carStore.delete(car.id)
+        currentCar = carStore.selected()
+        carsDialog = false
+        Toast.makeText(this, "Автомобиль и все его данные удалены", Toast.LENGTH_LONG).show()
+        if (carStore.all().isEmpty()) firstCarDialog = true
+    }
+
     private fun deleteUri(uri: Uri) {
         runCatching {
             if (uri.scheme == "file") uri.path?.let { java.io.File(it).delete() }
@@ -724,15 +1140,27 @@ class AlfaMainActivity : ComponentActivity() {
     }
 
     private fun uploadDiagnostic(car: Car, sessionName: String, complaint: String, uris: List<Uri>) {
-        Toast.makeText(this, "Отправляю диагностическую сессию…", Toast.LENGTH_LONG).show()
-        DiagnosticApi.upload(this, car, sessionName, complaint, uris) { result ->
+        val state = UploadState(car, sessionName, complaint, uris)
+        uploadState = state
+        performUpload(state)
+    }
+
+    private fun performUpload(state: UploadState) {
+        state.percent = 0
+        state.error = null
+        DiagnosticApi.upload(
+            this, state.car, state.sessionName, state.complaint, state.uris, accountStore.token,
+            onProgress = { pct -> runOnUiThread { if (pct > state.percent) state.percent = pct } }
+        ) { result ->
             runOnUiThread {
                 result.onSuccess { id ->
-                    recordStore.markAiSent(sessionName, id)
+                    state.percent = 100
+                    recordStore.markAiSent(state.sessionName, id)
+                    uploadState = null
                     startActivity(Intent(this, DiagnosticChatActivity::class.java).apply {
-                        putExtra("diagnostic_id", id); putExtra("session_name", sessionName)
+                        putExtra("diagnostic_id", id); putExtra("session_name", state.sessionName)
                     })
-                }.onFailure { e -> Toast.makeText(this, "Не удалось отправить: ${e.message}", Toast.LENGTH_LONG).show() }
+                }.onFailure { e -> state.error = e.message ?: "неизвестная ошибка" }
             }
         }
     }
@@ -767,7 +1195,7 @@ class AlfaMainActivity : ComponentActivity() {
             onLimitReached = { r -> stopRecording(r, true) }
         )
         recorder!!.start(); recording = true
-        setKeepScreenOn(true)
+        refreshKeepScreenOn()
         recordStartElapsed = SystemClock.elapsedRealtime(); recordElapsedSec = 0
         recordTimerHandler.removeCallbacks(recordTick); recordTimerHandler.post(recordTick)
     }
@@ -775,6 +1203,10 @@ class AlfaMainActivity : ComponentActivity() {
     private fun setKeepScreenOn(on: Boolean) {
         if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    private fun refreshKeepScreenOn() {
+        setKeepScreenOn(recording || dashboardOpen)
     }
 
     private fun toggleRecording() {
@@ -794,7 +1226,7 @@ class AlfaMainActivity : ComponentActivity() {
         if (recorder !== r) return
         recorder = null
         recording = false
-        setKeepScreenOn(false)
+        refreshKeepScreenOn()
         recordTimerHandler.removeCallbacks(recordTick); recordElapsedSec = 0
         Thread {
             r.stop()
@@ -820,7 +1252,48 @@ class AlfaMainActivity : ComponentActivity() {
         uploadDiagnostic(state.car, state.sessionName, complaint, lastSessionUris)
     }
 
-    override fun onDestroy() { recorder?.stop(); recorder = null; setKeepScreenOn(false); if (::ble.isInitialized) ble.close(); spp.close(); wifi.close(); super.onDestroy() }
+    private fun openDashboard() {
+        tripKm = 0.0
+        tripSec = 0
+        lastTripTick = 0L
+        dashboardPro = false
+        ElmSession.extendedPids = false
+        dashboardLandscape = settingsPrefs.getBoolean("dashboard_landscape", false)
+        dashboardOpen = true
+        refreshKeepScreenOn()
+        applyDashboardOrientation()
+        tripHandler.removeCallbacks(tripTick)
+        tripHandler.post(tripTick)
+    }
+
+    private fun closeDashboard() {
+        dashboardOpen = false
+        dashboardPro = false
+        ElmSession.extendedPids = false
+        refreshKeepScreenOn()
+        tripHandler.removeCallbacks(tripTick)
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+    }
+
+    private fun toggleDashboardOrientation() {
+        dashboardLandscape = !dashboardLandscape
+        settingsPrefs.edit().putBoolean("dashboard_landscape", dashboardLandscape).apply()
+        applyDashboardOrientation()
+    }
+
+    private fun applyDashboardOrientation() {
+        requestedOrientation = if (dashboardLandscape)
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        else ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+    }
+
+    override fun onDestroy() {
+        autoBackupHandler.removeCallbacks(autoBackupRunnable)
+        tripHandler.removeCallbacks(tripTick)
+        recorder?.stop(); recorder = null; setKeepScreenOn(false)
+        if (::ble.isInitialized) ble.close(); spp.close(); wifi.close()
+        super.onDestroy()
+    }
 }
 
 private class CarEditorState(val carId: String, val returnToDiagnostic: Boolean, car: Car) {
@@ -847,13 +1320,22 @@ private class HistoricalComplaintState(val car: Car, val record: DiagnosticRecor
     var complaint by mutableStateOf("")
 }
 
+private class UploadState(
+    val car: Car,
+    val sessionName: String,
+    val complaint: String,
+    val uris: List<Uri>
+) {
+    var percent by mutableStateOf(0)
+    var error by mutableStateOf<String?>(null)
+}
+
 @Composable
 private fun MainScreen(
     carTitle: String,
     carEnabled: Boolean,
     obdConnected: Boolean,
     obdValuesText: String,
-    errorCodes: List<String>,
     recording: Boolean,
     recordElapsedSec: Int,
     recordStatusText: String,
@@ -869,6 +1351,7 @@ private fun MainScreen(
     onDisconnect: () -> Unit,
     onConnectSaved: () -> Unit,
     onChooseNew: () -> Unit,
+    onDashboard: () -> Unit,
     onToggleRecord: () -> Unit,
     obdLog: List<String>,
     showObdLog: Boolean,
@@ -890,10 +1373,12 @@ private fun MainScreen(
                 Spacer(Modifier.width(8.dp))
                 Button(onClick = onAddCar, modifier = Modifier.weight(1f)) { Text("+ Добавить") }
             }
-            Button(onClick = onServiceBook, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite)) { Text("Сервисная книжка") }
             Row(Modifier.fillMaxWidth().padding(top = 8.dp)) {
                 Button(onClick = onHistory, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite)) { Text("История") }
                 Spacer(Modifier.width(8.dp))
+                Button(onClick = onServiceBook, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite)) { Text("Сервис") }
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp)) {
                 Button(onClick = onAccount, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite)) { Text("Аккаунт") }
                 Spacer(Modifier.width(8.dp))
                 Button(onClick = onHelp, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite)) { Text("Помощь") }
@@ -929,8 +1414,12 @@ private fun MainScreen(
                     obdLines.drop(4).take(4).forEach { Text(it, color = MaterialTheme.colorScheme.onBackground, fontSize = 18.sp) }
                 }
             }
-            Text("Ошибки:", color = MaterialTheme.colorScheme.onBackground, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp))
-            errorCodes.forEach { Text(it, color = DiagRed, fontSize = 18.sp) }
+            Button(
+                onClick = onDashboard,
+                enabled = carEnabled,
+                colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite),
+                modifier = Modifier.fillMaxWidth().padding(top = 14.dp)
+            ) { Text("ПРИБОРНАЯ ПАНЕЛЬ") }
             Button(
                 onClick = onToggleRecord,
                 enabled = carEnabled,
@@ -977,39 +1466,126 @@ private fun MainScreen(
 }
 
 @Composable
-private fun FirstCarDialog(onAdd: () -> Unit) {
+private fun FirstCarDialog(onAdd: () -> Unit, onRestore: () -> Unit) {
     AlertDialog(
         onDismissRequest = {},
         properties = DialogProperties(dismissOnClickOutside = false, dismissOnBackPress = false),
-        title = { Text("Добавьте автомобиль") },
-        text = { Text("Чтобы начать сбор информации, сначала добавьте автомобиль.") },
-        confirmButton = { TextButton(onClick = onAdd) { Text("Добавить автомобиль") } }
+        title = { Text("Добро пожаловать!") },
+        text = {
+            Column {
+                Text("Чтобы начать, добавьте автомобиль.")
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Если у вас уже есть резервная копия AlfaDiag (после переустановки приложения или с другого телефона), восстановите её — вернутся автомобили, диагностики, сервисная книжка, чаты и PDF.",
+                    fontSize = 13.sp,
+                    color = DiagLightGray
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onAdd) { Text("Добавить автомобиль") } },
+        dismissButton = { TextButton(onClick = onRestore) { Text("Восстановить из копии") } }
     )
 }
 
 @Composable
-private fun CarsDialog(cars: List<Car>, selectedCar: Car?, onSelect: (Car) -> Unit, onEditSelected: () -> Unit, onAdd: () -> Unit, onClose: () -> Unit) {
+private fun CarsDialog(
+    cars: List<Car>,
+    selectedCar: Car?,
+    onSelect: (Car) -> Unit,
+    onEdit: (Car) -> Unit,
+    onDelete: (Car) -> Unit,
+    onAdd: () -> Unit,
+    onClose: () -> Unit
+) {
     AlertDialog(
         onDismissRequest = onClose,
         title = { Text("Выберите автомобиль") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 cars.forEach { car ->
-                    Row(Modifier.fillMaxWidth().clickable { onSelect(car) }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        Modifier.fillMaxWidth().clickable { onSelect(car) }.padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         RadioButton(selected = car.id == selectedCar?.id, onClick = { onSelect(car) })
                         Spacer(Modifier.width(8.dp))
-                        Text(car.title())
+                        Text(car.title(), modifier = Modifier.weight(1f))
+                        IconButton(onClick = { onEdit(car) }) {
+                            Icon(Icons.Filled.Edit, contentDescription = "Изменить автомобиль", tint = DiagLightGray)
+                        }
+                        IconButton(onClick = { onDelete(car) }) {
+                            Icon(Icons.Filled.Delete, contentDescription = "Удалить автомобиль", tint = MaterialTheme.colorScheme.error)
+                        }
                     }
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onAdd) { Text("Добавить") } },
-        dismissButton = {
+        confirmButton = {
             Row {
-                TextButton(onClick = onEditSelected, enabled = selectedCar != null) { Text("Изменить") }
+                TextButton(onClick = onAdd) { Text("+ Добавить") }
                 TextButton(onClick = onClose) { Text("Закрыть") }
             }
         }
+    )
+}
+
+@Composable
+private fun DeleteCarDialog(car: Car, onConfirm: () -> Unit, onCancel: () -> Unit) {
+    val maxTextHeight = (LocalConfiguration.current.screenHeightDp * 0.55f).dp
+    AlertDialog(
+        onDismissRequest = onCancel,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier.fillMaxWidth(0.94f),
+        icon = {
+            Icon(
+                Icons.Filled.Warning,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(48.dp)
+            )
+        },
+        title = {
+            Text(
+                "Удалить автомобиль?",
+                color = MaterialTheme.colorScheme.error,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        text = {
+            Column(Modifier.heightIn(max = maxTextHeight).verticalScroll(rememberScrollState())) {
+                Text("Вы собираетесь удалить «${car.title()}».", fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "ВМЕСТЕ С НИМ БУДУТ БЕЗВОЗВРАТНО УДАЛЕНЫ:",
+                    color = MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(6.dp))
+                Text("• все диагностики этого автомобиля;")
+                Text("• все записи и файлы сессий (.adp);")
+                Text("• все PDF-заключения;")
+                Text("• сервисная книжка и её записи;")
+                Text("• все прочие данные, связанные с автомобилем.")
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "Отменить это действие будет НЕВОЗМОЖНО.",
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Если нужны заключения — сначала сохраните их PDF. Готовые PDF лежат в папке: Download/Alfa Diagnostic/conclusions",
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("УДАЛИТЬ ВСЁ", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Отмена") } }
     )
 }
 
@@ -1070,12 +1646,20 @@ private fun WifiDialog(initial: String, onConnect: (String) -> Unit, onCancel: (
 private fun AccountDialog(
     accountId: String?,
     credits: Int?,
+    spentMicros: Long?,
     subscriptionUntil: String,
     transferCode: String?,
     busy: Boolean,
     message: String?,
+    backupMessage: String?,
+    lastBackupName: String?,
+    lastBackupTime: Long,
+    lastRestoreTime: Long,
+    backupLocation: String,
     onCreateCode: () -> Unit,
     onRedeem: (String) -> Unit,
+    onBackup: () -> Unit,
+    onRestore: () -> Unit,
     onClose: () -> Unit
 ) {
     var input by remember { mutableStateOf("") }
@@ -1090,6 +1674,7 @@ private fun AccountDialog(
                     Text("ID: ${accountId.take(8)}…", fontFamily = FontFamily.Monospace)
                     Spacer(Modifier.height(6.dp))
                     Text("Диагностик в пакете: ${credits ?: 0}")
+                    Text("Израсходовано на ИИ: ${formatMicros(spentMicros)}")
                     Text(subscriptionLabel(subscriptionUntil))
                 }
                 Spacer(Modifier.height(14.dp))
@@ -1124,9 +1709,63 @@ private fun AccountDialog(
                     Spacer(Modifier.height(10.dp))
                     Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 14.sp)
                 }
+                Spacer(Modifier.height(16.dp))
+                HorizontalDivider(color = DiagGray)
+                Spacer(Modifier.height(12.dp))
+                Text("Резервная копия", fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Сохраните все данные приложения в один архив (.zip): автомобили, диагностики, сервисную книжку, чаты с ИИ, PDF-заключения и файлы сессий. Это нужно при переустановке приложения или переносе на новый телефон. Архив содержит личные данные, поэтому храните его в надёжном месте.",
+                    fontSize = 13.sp,
+                    color = DiagLightGray
+                )
+                Spacer(Modifier.height(10.dp))
+                if (lastBackupTime > 0) {
+                    Text("Последняя копия: ${formatDateTime(lastBackupTime)}", fontWeight = FontWeight.Bold)
+                    lastBackupName?.let { Text("Файл: $it", fontSize = 13.sp, fontFamily = FontFamily.Monospace) }
+                    Text("Путь: $backupLocation", fontSize = 13.sp, color = DiagLightGray)
+                } else {
+                    Text("Резервных копий пока нет.", fontSize = 13.sp, color = DiagLightGray)
+                }
+                if (lastRestoreTime > 0) {
+                    Spacer(Modifier.height(4.dp))
+                    Text("Последнее восстановление: ${formatDateTime(lastRestoreTime)}", fontSize = 13.sp, color = DiagLightGray)
+                }
+                Spacer(Modifier.height(10.dp))
+                Button(
+                    onClick = onBackup,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = DiagGray)
+                ) { Text("Сохранить копию сейчас", fontSize = 14.sp) }
+                Button(
+                    onClick = onRestore,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = DiagGray)
+                ) { Text("Восстановить из копии", fontSize = 14.sp) }
+                Text(
+                    "Копии создаются автоматически при запуске приложения и далее каждые 10 минут (хранятся 3 последние).",
+                    fontSize = 12.sp,
+                    color = DiagLightGray,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+                backupMessage?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
+                }
             }
         },
         confirmButton = { TextButton(onClick = onClose) { Text("Закрыть") } }
+    )
+}
+
+@Composable
+private fun ConfirmRestoreDialog(onConfirm: () -> Unit, onCancel: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Восстановить данные?") },
+        text = { Text("Текущие данные приложения (автомобили, диагностики, сервисная книжка, чаты) будут заменены данными из файла резервной копии. Это действие нельзя отменить.") },
+        confirmButton = { TextButton(onClick = onConfirm) { Text("ВЫБРАТЬ ФАЙЛ") } },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Отмена") } }
     )
 }
 
@@ -1134,6 +1773,9 @@ private fun subscriptionLabel(until: String): String {
     if (until.isBlank()) return "Подписка не активна"
     return "Подписка активна до: ${until.substringBefore('T')}"
 }
+
+private fun formatMicros(micros: Long?): String =
+    String.format(Locale.US, "\$%.4f", (micros ?: 0L) / 1_000_000.0)
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -1214,6 +1856,47 @@ private fun PostRecordDialog(state: PostRecordState, onClose: () -> Unit, onStar
         confirmButton = { TextButton(onClick = onStartAi) { Text("НАЧАТЬ ДИАГНОСТИКУ ИИ") } },
         dismissButton = { TextButton(onClick = onClose) { Text("Закрыть") } }
     )
+}
+
+@Composable
+private fun UploadProgressDialog(state: UploadState, onRetry: () -> Unit, onClose: () -> Unit) {
+    val err = state.error
+    if (err == null) {
+        LaunchedEffect(Unit) {
+            while (true) {
+                delay(200)
+                if (state.percent < 95) state.percent += 1
+            }
+        }
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Передача данных в ИИ") },
+            text = {
+                Column {
+                    Text("Диагностическая сессия отправляется искусственному интеллекту на анализ. Дождитесь окончания передачи — не закрывайте приложение.")
+                    Spacer(Modifier.height(16.dp))
+                    LinearProgressIndicator(progress = { state.percent / 100f }, modifier = Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "${state.percent}%",
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {}
+        )
+    } else {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Не удалось отправить") },
+            text = { Text("Передача в ИИ не удалась.\n\n$err") },
+            confirmButton = { TextButton(onClick = onRetry) { Text("ПОВТОРИТЬ") } },
+            dismissButton = { TextButton(onClick = onClose) { Text("ЗАКРЫТЬ") } }
+        )
+    }
 }
 
 @Composable

@@ -38,7 +38,17 @@ class ElmSession(
     @Volatile private var running = false
     private var commandIndex = 0
     private var pendingDrain = false
-    private val commands = listOf("010C", "010D", "0104", "0111", "010B", "0105", "010F", "0142")
+    private val baseCommands = listOf("010C", "010D", "0104", "0111", "010B", "0105", "010F", "0142", "0110", "0146")
+    private val extendedCommands = baseCommands + listOf(
+        "0106", "0107", "0108", "0109", "0103", "010E", "0114", "0115",
+        "0133", "0123", "015C", "013C", "0101", "0162", "012C", "012D"
+    )
+
+    companion object {
+        /** Профессиональный экран запрашивает расширенный набор PID; приборка — только быстрый. */
+        @Volatile
+        var extendedPids: Boolean = false
+    }
 
     private fun log(line: String) = listener.onLog(line)
 
@@ -54,7 +64,7 @@ class ElmSession(
                 readTroubleCodes()
                 running = true; commandIndex = 0; values.speedPidPresent = false; values.speed = null
                 listener.onState("ELM327 готов; OBD опрашивается")
-                log("Опрос PID: ${commands.joinToString(" ")}")
+                log("Опрос PID: ${baseCommands.joinToString(" ")}")
                 pollLoop()
             } catch (t: Throwable) {
                 log("Ошибка OBD-сессии: ${t.javaClass.simpleName}: ${t.message}")
@@ -127,6 +137,15 @@ class ElmSession(
         return s.replace(Regex("[^0-9A-F]"), "")
     }
 
+    private fun fuelSystemName(v: Int): String = when (v) {
+        1 -> "Open loop (холодный)"
+        2 -> "Closed loop"
+        4 -> "Open loop (нагрузка)"
+        8 -> "Open loop (неисправность)"
+        16 -> "Closed loop (неисправность)"
+        else -> "—"
+    }
+
     private fun parseResponse(response: String, pid: Int): Boolean {
         val hex = hexData(response)
         val marker = "%02X".format(Locale.US, pid)
@@ -144,6 +163,24 @@ class ElmSession(
             0x05 -> { val a=b(0) ?: return false; values.coolant=a-40.0 }
             0x0F -> { val a=b(0) ?: return false; values.intake=a-40.0 }
             0x42 -> { val a=b(0) ?: return false; val c=b(2) ?: return false; values.voltage=(a*256+c)/1000.0 }
+            0x10 -> { val a=b(0) ?: return false; val c=b(2) ?: return false; values.maf=(a*256+c)/100.0 }
+            0x46 -> { val a=b(0) ?: return false; values.ambient=a-40.0 }
+            0x06 -> { val a=b(0) ?: return false; values.stft1=(a-128)*100.0/128.0 }
+            0x07 -> { val a=b(0) ?: return false; values.ltft1=(a-128)*100.0/128.0 }
+            0x08 -> { val a=b(0) ?: return false; values.stft2=(a-128)*100.0/128.0 }
+            0x09 -> { val a=b(0) ?: return false; values.ltft2=(a-128)*100.0/128.0 }
+            0x03 -> { val a=b(0) ?: return false; values.fuelSystem=fuelSystemName(a) }
+            0x0E -> { val a=b(0) ?: return false; values.timing=a/2.0-64.0 }
+            0x14 -> { val a=b(0) ?: return false; values.o2B1S1=a/200.0 }
+            0x15 -> { val a=b(0) ?: return false; values.o2B1S2=a/200.0 }
+            0x33 -> { val a=b(0) ?: return false; values.baro=a.toDouble() }
+            0x23 -> { val a=b(0) ?: return false; val c=b(2) ?: return false; values.railPressure=(a*256+c)*10.0 }
+            0x5C -> { val a=b(0) ?: return false; values.oilTemp=a-40.0 }
+            0x3C -> { val a=b(0) ?: return false; val c=b(2) ?: return false; values.catTemp=(a*256+c)/10.0-40.0 }
+            0x01 -> { val a=b(0) ?: return false; values.milOn=(a and 0x80)!=0; values.dtcCount=a and 0x7F }
+            0x62 -> { val a=b(0) ?: return false; values.torque=a-125.0 }
+            0x2C -> { val a=b(0) ?: return false; values.egr=a*100.0/255.0 }
+            0x2D -> { val a=b(0) ?: return false; values.egrError=(a-128)*100.0/128.0 }
             else -> return false
         }; return true
     }
@@ -216,7 +253,8 @@ class ElmSession(
 
     private fun pollLoop() {
         while (running) {
-            val command = commands[commandIndex++ % commands.size]; val pid = command.substring(2).toInt(16)
+            val cmds = if (extendedPids) extendedCommands else baseCommands
+            val command = cmds[commandIndex++ % cmds.size]; val pid = command.substring(2).toInt(16)
             if (pid == 0x0D) { values.speedPidPresent = false; values.speed = null }
             val response = sendAndWait(command, 2000)
             if (parseResponse(response, pid)) listener.onData(values.copy(), SystemClock.elapsedRealtimeNanos())

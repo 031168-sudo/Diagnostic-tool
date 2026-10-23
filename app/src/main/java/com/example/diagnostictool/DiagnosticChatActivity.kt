@@ -1,33 +1,35 @@
 package com.example.diagnostictool
 
-import android.Manifest
 import android.content.ContentValues
-import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Bundle
 import android.provider.MediaStore
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -39,17 +41,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import com.example.diagnostictool.ui.theme.DiagGray
 import com.example.diagnostictool.ui.theme.DiagLightGray
 import com.example.diagnostictool.ui.theme.DiagWhite
 import com.example.diagnostictool.ui.theme.DiagnosticTheme
 import kotlinx.coroutines.flow.collectLatest
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -59,18 +63,8 @@ class DiagnosticChatActivity : ComponentActivity() {
     private var lastConclusion = ""
     private var lastDocument = ""
     private var lastState = ""
-    private val followUp = mutableListOf<Pair<String, String>>()
     private val busy = AtomicBoolean(false)
-
-    private var recognizer: SpeechRecognizer? = null
-    private var voiceBase = ""
-
-    private val requestMicPermission = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) onMicClicked()
-        else Toast.makeText(this, "Нет доступа к микрофону", Toast.LENGTH_SHORT).show()
-    }
+    private val recordStore by lazy { DiagnosticRecordStore(this) }
 
     private var stageText by mutableStateOf("")
     private var chatLines by mutableStateOf<List<ChatLine>>(emptyList())
@@ -81,34 +75,24 @@ class DiagnosticChatActivity : ComponentActivity() {
     private var sendEnabled by mutableStateOf(false)
     private var pdfEnabled by mutableStateOf(false)
     private var retryEnabled by mutableStateOf(false)
-    private var listening by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         diagnosticId = intent.getStringExtra("diagnostic_id") ?: run { finish(); return }
         sessionName = intent.getStringExtra("session_name") ?: "diagnostic"
-        if (SpeechRecognizer.isRecognitionAvailable(this)) {
-            recognizer = SpeechRecognizer.createSpeechRecognizer(this).apply { setRecognitionListener(listener) }
-        }
         setContent {
             DiagnosticTheme {
                 ChatScreen(
                     stageText = stageText, chatLines = chatLines, questionText = questionText,
                     answerHint = answerHint, answerText = answerText, answerEnabled = answerEnabled,
-                    sendEnabled = sendEnabled, pdfEnabled = pdfEnabled, retryEnabled = retryEnabled, listening = listening,
-                    onAnswerChange = { answerText = it }, onSend = { submitAnswer() }, onMic = { onMicClicked() },
+                    sendEnabled = sendEnabled, pdfEnabled = pdfEnabled, retryEnabled = retryEnabled,
+                    onAnswerChange = { answerText = it }, onSend = { submitAnswer() },
                     onSavePdf = { savePdf() }, onRetry = { retryAnalysis() }, onBack = { finish() }
                 )
             }
         }
         poll()
-    }
-
-    override fun onDestroy() {
-        recognizer?.destroy()
-        recognizer = null
-        super.onDestroy()
     }
 
     private fun poll() {
@@ -124,6 +108,11 @@ class DiagnosticChatActivity : ComponentActivity() {
                         else -> s.message
                     }
                     retryEnabled = s.state == "error"
+                    if (s.transcript.isNotEmpty()) {
+                        val arr = JSONArray()
+                        s.transcript.forEach { (role, text) -> arr.put(JSONObject().put("role", role).put("text", text)) }
+                        recordStore.setTranscript(sessionName, arr.toString())
+                    }
                     chatLines = buildLines(s)
                     when (s.state) {
                         "question" -> { questionText = s.question; answerHint = "Ваш ответ"; answerEnabled = true; sendEnabled = true }
@@ -142,9 +131,24 @@ class DiagnosticChatActivity : ComponentActivity() {
     private fun buildLines(s: DiagnosticApi.Status): List<ChatLine> {
         val list = mutableListOf<ChatLine>()
         if (s.state == "processing") list += ChatLine("ai", "ИИ получает и сопоставляет данные записи…")
-        if (s.question.isNotBlank()) list += ChatLine("ai", s.question)
-        if (s.conclusion.isNotBlank()) list += ChatLine("ai", "Заключение:\n${s.conclusion}")
-        followUp.forEach { (role, text) -> list += ChatLine(if (role == "user") "user" else "ai", text) }
+        if (s.transcript.isNotEmpty()) {
+            s.transcript.forEach { (role, text) ->
+                if (text.isNotBlank()) list += ChatLine(if (role == "user") "user" else "ai", text)
+            }
+        } else {
+            val cached = recordStore.transcript(sessionName)
+            if (!cached.isNullOrBlank()) {
+                val arr = JSONArray(cached)
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val text = o.optString("text")
+                    if (text.isNotBlank()) list += ChatLine(if (o.optString("role") == "user") "user" else "ai", text)
+                }
+            } else {
+                if (s.question.isNotBlank()) list += ChatLine("ai", s.question)
+                if (s.conclusion.isNotBlank()) list += ChatLine("ai", "Заключение:\n${s.conclusion}")
+            }
+        }
         return list
     }
 
@@ -157,10 +161,9 @@ class DiagnosticChatActivity : ComponentActivity() {
             DiagnosticApi.chat(diagnosticId, text) { result ->
                 runOnUiThread {
                     busy.set(false); sendEnabled = true
-                    result.onSuccess { reply ->
-                        followUp += "user" to text; followUp += "assistant" to reply
+                    result.onSuccess { _ ->
                         answerText = ""; questionText = "Можете задать уточняющий вопрос по заключению"
-                        chatLines = buildLines(DiagnosticApi.Status(diagnosticId, lastState, "", "", "", emptyList(), lastConclusion, ""))
+                        poll()
                     }.onFailure { e -> questionText = "Ошибка отправки: ${e.message}" }
                 }
             }
@@ -184,74 +187,6 @@ class DiagnosticChatActivity : ComponentActivity() {
                 if (result.isSuccess) poll() else stageText = "Ошибка: ${result.exceptionOrNull()?.message}"
             }
         }
-    }
-
-    private fun onMicClicked() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)
-            return
-        }
-        val r = recognizer
-        if (r == null) {
-            Toast.makeText(this, "Распознавание речи недоступно", Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (listening) {
-            r.stopListening()
-            listening = false
-            return
-        }
-        voiceBase = answerText
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-        }
-        r.startListening(intent)
-        listening = true
-    }
-
-    private fun applyVoice(spoken: String) {
-        if (spoken.isBlank()) return
-        answerText = if (voiceBase.isBlank()) spoken else voiceBase.trimEnd() + " " + spoken
-    }
-
-    private val listener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) {}
-        override fun onBeginningOfSpeech() {}
-        override fun onRmsChanged(rmsdB: Float) {}
-        override fun onBufferReceived(buffer: ByteArray?) {}
-        override fun onEndOfSpeech() { listening = false }
-
-        override fun onResults(results: Bundle?) {
-            listening = false
-            val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-            applyVoice(text.orEmpty())
-            voiceBase = answerText
-        }
-
-        override fun onPartialResults(partialResults: Bundle?) {
-            val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-            applyVoice(text.orEmpty())
-        }
-
-        override fun onError(error: Int) {
-            listening = false
-            val message = when (error) {
-                SpeechRecognizer.ERROR_NO_MATCH,
-                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Не расслышал, повторите"
-                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Распознаватель занят"
-                SpeechRecognizer.ERROR_NETWORK,
-                SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Нужна сеть для распознавания"
-                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Нет разрешения на микрофон"
-                SpeechRecognizer.ERROR_AUDIO -> "Ошибка микрофона"
-                else -> "Ошибка распознавания ($error)"
-            }
-            Toast.makeText(this@DiagnosticChatActivity, message, Toast.LENGTH_SHORT).show()
-        }
-
-        override fun onEvent(eventType: Int, params: Bundle?) {}
     }
 
     private fun savePdf() {
@@ -288,27 +223,50 @@ class DiagnosticChatActivity : ComponentActivity() {
 @Composable
 private fun ChatScreen(
     stageText: String, chatLines: List<ChatLine>, questionText: String, answerHint: String,
-    answerText: String, answerEnabled: Boolean, sendEnabled: Boolean, pdfEnabled: Boolean, retryEnabled: Boolean, listening: Boolean,
-    onAnswerChange: (String) -> Unit, onSend: () -> Unit, onMic: () -> Unit, onSavePdf: () -> Unit, onRetry: () -> Unit, onBack: () -> Unit
+    answerText: String, answerEnabled: Boolean, sendEnabled: Boolean, pdfEnabled: Boolean, retryEnabled: Boolean,
+    onAnswerChange: (String) -> Unit, onSend: () -> Unit, onSavePdf: () -> Unit, onRetry: () -> Unit, onBack: () -> Unit
 ) {
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize().padding(horizontal = 24.dp, vertical = 24.dp)) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .consumeWindowInsets(padding)
+                .imePadding()
+        ) {
             val scrollState = rememberScrollState()
             LaunchedEffect(chatLines, stageText, questionText) {
                 snapshotFlow { scrollState.maxValue }.collectLatest { scrollState.animateScrollTo(it) }
             }
-            Text("Alfa Diagnostic — ИИ", fontSize = 24.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp))
-            if (stageText.isNotBlank()) Text(stageText, fontSize = 18.sp, modifier = Modifier.padding(bottom = 12.dp))
-            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(scrollState).padding(bottom = 16.dp)) {
+            Text(
+                "Alfa Diagnostic — ИИ",
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp)
+            )
+            Column(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(scrollState)
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+            ) {
+                if (stageText.isNotBlank()) {
+                    Text(stageText, fontSize = 16.sp, color = DiagLightGray, modifier = Modifier.padding(bottom = 10.dp))
+                }
                 chatLines.forEach { line ->
                     val isUser = line.role == "user"
-                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
+                    ) {
                         Surface(
                             color = if (isUser) MaterialTheme.colorScheme.primary else DiagGray,
-                            shape = RoundedCornerShape(12.dp),
+                            shape = RoundedCornerShape(16.dp),
                             modifier = Modifier.widthIn(max = 300.dp)
                         ) {
-                            Column(Modifier.padding(10.dp)) {
+                            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                                 Text(if (isUser) "Вы" else "ИИ", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (isUser) DiagWhite else DiagLightGray)
                                 Text(line.text, fontSize = 16.sp, color = DiagWhite)
                             }
@@ -316,21 +274,79 @@ private fun ChatScreen(
                     }
                 }
             }
-            if (questionText.isNotBlank()) Text(questionText, fontSize = 18.sp, modifier = Modifier.padding(bottom = 8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                OutlinedTextField(value = answerText, onValueChange = onAnswerChange, enabled = answerEnabled, label = { Text(answerHint) }, minLines = 2, modifier = Modifier.weight(1f))
-                Button(onClick = onMic, enabled = answerEnabled, modifier = Modifier.padding(start = 8.dp)) {
-                    Icon(
-                        painter = painterResource(if (listening) R.drawable.ic_stop else R.drawable.ic_mic),
-                        contentDescription = if (listening) "Остановить запись" else "Голосовой ввод"
-                    )
+
+            if (questionText.isNotBlank()) {
+                Text(
+                    questionText,
+                    fontSize = 15.sp,
+                    color = DiagLightGray,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp)
+                )
+            }
+
+            Surface(
+                color = DiagGray,
+                shape = RoundedCornerShape(24.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                    Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.fillMaxWidth()) {
+                        BasicTextField(
+                            value = answerText,
+                            onValueChange = onAnswerChange,
+                            enabled = answerEnabled,
+                            textStyle = TextStyle(color = DiagWhite, fontSize = 16.sp),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            maxLines = 5,
+                            modifier = Modifier.weight(1f).padding(vertical = 6.dp),
+                            decorationBox = { inner ->
+                                Box(Modifier.fillMaxWidth()) {
+                                    if (answerText.isEmpty()) {
+                                        Text(answerHint, color = DiagLightGray, fontSize = 16.sp)
+                                    }
+                                    inner()
+                                }
+                            }
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        FilledIconButton(
+                            onClick = onSend,
+                            enabled = sendEnabled,
+                            modifier = Modifier.size(44.dp)
+                        ) {
+                            Icon(painterResource(R.drawable.ic_send), contentDescription = "Отправить")
+                        }
+                    }
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (retryEnabled) {
+                            ComposerButton("Повторить", onRetry, Modifier.weight(1f))
+                        }
+                        ComposerButton("Сохранить PDF", onSavePdf, Modifier.weight(1f), enabled = pdfEnabled)
+                        ComposerButton("Назад", onBack, Modifier.weight(1f))
+                    }
                 }
             }
-            Button(onClick = onSend, enabled = sendEnabled, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("ОТПРАВИТЬ ОТВЕТ") }
-            if (retryEnabled) Button(onClick = onRetry, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("ПОВТОРИТЬ АНАЛИЗ") }
-            Button(onClick = onSavePdf, enabled = pdfEnabled, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("СОХРАНИТЬ ЗАКЛЮЧЕНИЕ PDF") }
-            Button(onClick = onBack, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("НАЗАД") }
         }
+    }
+}
+
+@Composable
+private fun ComposerButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.height(38.dp),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+    ) {
+        Text(text, fontSize = 13.sp, maxLines = 1)
     }
 }
 
