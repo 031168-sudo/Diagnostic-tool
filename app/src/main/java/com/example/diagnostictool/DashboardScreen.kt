@@ -4,6 +4,7 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -22,7 +23,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -42,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -120,7 +121,8 @@ fun DashboardScreen(
     onOpenPro: () -> Unit,
     onClose: () -> Unit
 ) {
-    val model = DashModel(
+    val demo = rememberDemoValues(enabled = DEMO_WITHOUT_OBD && !connected)
+    val model = if (demo != null) demo else DashModel(
         speed = values.speed,
         rpm = values.rpm,
         coolant = values.coolant,
@@ -148,8 +150,45 @@ private data class DashModel(
     val coolant: Double?,
     val voltage: Double?,
     val ambient: Double?,
-    val connected: Boolean
+    val connected: Boolean,
+    val demo: Boolean = false
 )
+
+/**
+ * ТЕСТОВЫЙ РЕЖИМ для проверки дизайна: пока OBD не подключён, приборная панель
+ * показывает имитацию поездки (разгоны, переключения передач, прогрев ОЖ,
+ * колебания напряжения и температуры за бортом). При реальном подключении
+ * OBD всегда показываются настоящие данные. Для релиза поставить false.
+ */
+private const val DEMO_WITHOUT_OBD = true
+
+@Composable
+private fun rememberDemoValues(enabled: Boolean): DashModel? {
+    var t by remember { mutableStateOf(0.0) }
+    LaunchedEffect(enabled) {
+        if (!enabled) return@LaunchedEffect
+        val start = System.nanoTime()
+        while (true) {
+            delay(50)
+            t = (System.nanoTime() - start) / 1e9
+        }
+    }
+    if (!enabled) return null
+    val twoPi = 2 * Math.PI
+    val speed = (65 + 62 * sin(twoPi * t / 45) + 8 * sin(twoPi * t / 7)).coerceAtLeast(0.0)
+    val perKmh = when {
+        speed < 18 -> 110.0
+        speed < 35 -> 62.0
+        speed < 55 -> 44.0
+        speed < 80 -> 33.0
+        else -> 27.0
+    }
+    val rpm = maxOf(820.0 + 30 * sin(t * 3), speed * perKmh)
+    val coolant = if (t < 60) 55 + 37 * t / 60 else 92 + 9 * sin(twoPi * (t - 60) / 90)
+    val voltage = 13.6 + 0.8 * sin(twoPi * t / 70)
+    val ambient = 7.5 + 22.5 * sin(twoPi * t / 120)
+    return DashModel(speed, rpm, coolant, voltage, ambient, connected = true, demo = true)
+}
 
 @Composable
 private fun rememberClock(): String {
@@ -169,7 +208,7 @@ private fun DashboardPortrait(
     onToggle: () -> Unit, onReset: () -> Unit, onOpenPro: () -> Unit, onClose: () -> Unit
 ) {
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 10.dp, vertical = 6.dp)) {
-        TopBar(m.connected, onOpenPro)
+        TopBar(m.connected, m.demo, onOpenPro)
         Box(Modifier.weight(1.15f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             AnalogGauge(
                 value = m.speed, minValue = 0.0, maxValue = 220.0,
@@ -193,25 +232,19 @@ private fun DashboardPortrait(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             IconCard(
-                iconRes = R.drawable.ic_coolant, label = "ОЖ",
-                value = m.coolant?.let { fmt0(it) } ?: "—", unit = "°C",
-                accent = coolantColor(m.coolant), modifier = Modifier.weight(1f).fillMaxHeight(),
-                bar = {
-                    SegmentedBar(
-                        m.coolant, 40.0, 120.0, 8, coolantColor(m.coolant),
-                        Modifier.fillMaxWidth().padding(top = 4.dp)
-                    )
-                }
+                R.drawable.ic_coolant, m.coolant?.let { fmt0(it) } ?: "—", "°C",
+                coolantColor(m.coolant), frac(m.coolant, 40.0, 120.0),
+                Modifier.weight(1f).fillMaxHeight()
             )
             IconCard(
-                iconRes = R.drawable.ic_battery, label = "АКБ",
-                value = m.voltage?.let { fmt1(it) } ?: "—", unit = "В",
-                accent = voltageColor(m.voltage), modifier = Modifier.weight(1f).fillMaxHeight()
+                R.drawable.ic_battery, m.voltage?.let { fmt1(it) } ?: "—", "В",
+                voltageColor(m.voltage), frac(m.voltage, 11.0, 15.0),
+                Modifier.weight(1f).fillMaxHeight()
             )
             IconCard(
-                iconRes = R.drawable.ic_ambient, label = "ЗА БОРТОМ",
-                value = m.ambient?.let { fmt0(it) } ?: "—", unit = "°C",
-                accent = ambientColor(m.ambient), modifier = Modifier.weight(1f).fillMaxHeight()
+                R.drawable.ic_ambient, m.ambient?.let { fmt0(it) } ?: "—", "°C",
+                ambientColor(m.ambient), frac(m.ambient, -30.0, 40.0),
+                Modifier.weight(1f).fillMaxHeight()
             )
         }
         TripRow(tripKm, tripSec, clock, onReset)
@@ -225,7 +258,7 @@ private fun DashboardLandscape(
     onToggle: () -> Unit, onReset: () -> Unit, onOpenPro: () -> Unit, onClose: () -> Unit
 ) {
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 12.dp, vertical = 6.dp)) {
-        TopBar(m.connected, onOpenPro)
+        TopBar(m.connected, m.demo, onOpenPro)
         Row(
             Modifier.weight(1f).fillMaxWidth().padding(top = 2.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -257,7 +290,7 @@ private fun DashboardLandscape(
 }
 
 @Composable
-private fun TopBar(connected: Boolean, onOpenPro: () -> Unit) {
+private fun TopBar(connected: Boolean, demo: Boolean, onOpenPro: () -> Unit) {
     val p = LocalDashPalette.current
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         TextButton(onClick = onOpenPro, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) {
@@ -265,8 +298,8 @@ private fun TopBar(connected: Boolean, onOpenPro: () -> Unit) {
         }
         Spacer(Modifier.weight(1f))
         Text(
-            if (connected) "OBD" else "НЕТ OBD",
-            color = if (connected) p.green else p.red,
+            when { demo -> "ДЕМО"; connected -> "OBD"; else -> "НЕТ OBD" },
+            color = when { demo -> Amber; connected -> p.green; else -> p.red },
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold
         )
@@ -275,96 +308,92 @@ private fun TopBar(connected: Boolean, onOpenPro: () -> Unit) {
 
 @Composable
 private fun CenterPanel(m: DashModel, modifier: Modifier = Modifier) {
-    val p = LocalDashPalette.current
-    Column(
-        modifier.background(p.panel, RoundedCornerShape(18.dp)).padding(horizontal = 10.dp, vertical = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Icon(painterResource(R.drawable.ic_coolant), contentDescription = null, tint = p.text, modifier = Modifier.size(34.dp))
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(
-                m.coolant?.let { fmt0(it) } ?: "—", color = coolantColor(m.coolant),
-                fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1,
-                textAlign = TextAlign.End, modifier = Modifier.width(54.dp)
-            )
-            Text(" °C", color = p.muted, fontSize = 10.sp, modifier = Modifier.padding(bottom = 3.dp))
-        }
-        SegmentedBar(m.coolant, 40.0, 120.0, 10, coolantColor(m.coolant), Modifier.fillMaxWidth().padding(top = 4.dp))
-        Spacer(Modifier.height(8.dp))
-        Icon(painterResource(R.drawable.ic_battery), contentDescription = null, tint = p.text, modifier = Modifier.size(34.dp))
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(
-                m.voltage?.let { fmt1(it) } ?: "—", color = voltageColor(m.voltage),
-                fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1,
-                textAlign = TextAlign.End, modifier = Modifier.width(54.dp)
-            )
-            Text(" В", color = p.muted, fontSize = 10.sp, modifier = Modifier.padding(bottom = 3.dp))
-        }
-        Spacer(Modifier.height(8.dp))
-        Icon(painterResource(R.drawable.ic_ambient), contentDescription = null, tint = p.text, modifier = Modifier.size(34.dp))
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(
-                m.ambient?.let { fmt0(it) } ?: "—", color = ambientColor(m.ambient),
-                fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1,
-                textAlign = TextAlign.End, modifier = Modifier.width(54.dp)
-            )
-            Text(" °C", color = p.muted, fontSize = 10.sp, modifier = Modifier.padding(bottom = 3.dp))
-        }
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        IconCard(
+            R.drawable.ic_coolant, m.coolant?.let { fmt0(it) } ?: "—", "°C",
+            coolantColor(m.coolant), frac(m.coolant, 40.0, 120.0),
+            Modifier.weight(1f).fillMaxWidth(), compact = true
+        )
+        IconCard(
+            R.drawable.ic_battery, m.voltage?.let { fmt1(it) } ?: "—", "В",
+            voltageColor(m.voltage), frac(m.voltage, 11.0, 15.0),
+            Modifier.weight(1f).fillMaxWidth(), compact = true
+        )
+        IconCard(
+            R.drawable.ic_ambient, m.ambient?.let { fmt0(it) } ?: "—", "°C",
+            ambientColor(m.ambient), frac(m.ambient, -30.0, 40.0),
+            Modifier.weight(1f).fillMaxWidth(), compact = true
+        )
     }
 }
 
+private fun frac(value: Double?, min: Double, max: Double): Float? =
+    value?.let { ((it - min) / (max - min)).coerceIn(0.0, 1.0).toFloat() }
+
+/**
+ * Карточка параметра в стиле контрольной лампы: иконка «горит» цветом статуса
+ * (норма / внимание / авария), крупная цифра — цветом текста, внизу шкала уровня.
+ */
 @Composable
 private fun IconCard(
     iconRes: Int,
-    label: String,
     value: String,
     unit: String,
     accent: Color,
+    level: Float?,
     modifier: Modifier = Modifier,
-    bar: (@Composable () -> Unit)? = null
+    compact: Boolean = false
 ) {
     val p = LocalDashPalette.current
-    val shape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(16.dp)
+    val content: @Composable () -> Unit = {
+        Icon(
+            painterResource(iconRes), contentDescription = null, tint = accent,
+            modifier = Modifier.size(if (compact) 28.dp else 38.dp)
+        )
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(
+                value, color = p.text, fontSize = if (compact) 22.sp else 27.sp,
+                fontWeight = FontWeight.Bold, maxLines = 1, textAlign = TextAlign.End,
+                style = TextStyle(fontFeatureSettings = "tnum"),
+                modifier = Modifier.width(if (compact) 50.dp else 60.dp)
+            )
+            Text(
+                " $unit", color = p.muted, fontSize = 12.sp, fontWeight = FontWeight.Medium,
+                maxLines = 1, modifier = Modifier.padding(bottom = if (compact) 3.dp else 4.dp)
+            )
+        }
+    }
     Column(
         modifier
             .clip(shape)
-            .background(p.panel)
-            // Статус выводится тонкой полоской сверху: цифры остаются одного цвета и читаются ровно
-            .drawBehind { drawRect(accent, Offset.Zero, Size(size.width, 3.dp.toPx())) }
-            .padding(horizontal = 6.dp, vertical = 8.dp),
+            .background(Brush.verticalGradient(listOf(p.panel, p.bg)))
+            .border(1.dp, p.ringDim, shape)
+            .padding(horizontal = 10.dp, vertical = if (compact) 6.dp else 10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        verticalArrangement = Arrangement.SpaceEvenly
     ) {
-        Icon(painterResource(iconRes), contentDescription = null, tint = p.muted, modifier = Modifier.size(22.dp))
-        Text(
-            label, color = p.muted, fontSize = 9.sp, fontWeight = FontWeight.SemiBold,
-            letterSpacing = 0.8.sp, maxLines = 1, modifier = Modifier.padding(top = 2.dp)
-        )
-        Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.padding(top = 2.dp)) {
-            Text(
-                value, color = p.text, fontSize = 24.sp, fontWeight = FontWeight.Bold,
-                maxLines = 1, textAlign = TextAlign.End,
-                style = TextStyle(fontFeatureSettings = "tnum"),
-                modifier = Modifier.width(54.dp)
-            )
-            Text(" $unit", color = p.muted, fontSize = 11.sp, fontWeight = FontWeight.Medium,
-                modifier = Modifier.padding(bottom = 4.dp), maxLines = 1)
+        if (compact) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                content()
+            }
+        } else {
+            content()
         }
-        bar?.invoke()
+        LevelBar(level, accent, Modifier.fillMaxWidth())
     }
 }
 
 @Composable
-private fun SegmentedBar(value: Double?, min: Double, max: Double, segments: Int, color: Color, modifier: Modifier = Modifier) {
+private fun LevelBar(level: Float?, color: Color, modifier: Modifier = Modifier) {
     val p = LocalDashPalette.current
-    val frac = if (value == null) 0f else ((value - min) / (max - min)).coerceIn(0.0, 1.0).toFloat()
-    val filled = (frac * segments).roundToInt()
+    val segments = 10
+    val filled = ((level ?: 0f) * segments).roundToInt()
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
         repeat(segments) { i ->
             Box(
-                Modifier.weight(1f).height(7.dp)
-                    .background(if (i < filled) color else p.ringDim, RoundedCornerShape(2.dp))
+                Modifier.weight(1f).height(5.dp)
+                    .background(if (i < filled) color else p.ringDim, RoundedCornerShape(1.5.dp))
             )
         }
     }
