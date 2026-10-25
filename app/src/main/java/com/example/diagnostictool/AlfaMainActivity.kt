@@ -5,6 +5,7 @@ import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -97,12 +98,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
-import com.example.diagnostictool.ui.theme.DiagButtonGray
-import com.example.diagnostictool.ui.theme.DiagGray
+import androidx.core.view.WindowCompat
 import com.example.diagnostictool.ui.theme.DiagGreen
-import com.example.diagnostictool.ui.theme.DiagLightGray
 import com.example.diagnostictool.ui.theme.DiagRed
-import com.example.diagnostictool.ui.theme.DiagWhite
 import com.example.diagnostictool.ui.theme.DiagnosticTheme
 import org.json.JSONArray
 import org.json.JSONObject
@@ -259,6 +257,7 @@ class AlfaMainActivity : ComponentActivity() {
     private var serviceEditor by mutableStateOf<ServiceEntry?>(null)
     private var serviceVersion by mutableStateOf(0)
     private val settingsPrefs by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
+    private var themeMode by mutableStateOf("system")
 
     private var firstCarDialog by mutableStateOf(false)
     private var carsDialog by mutableStateOf(false)
@@ -303,8 +302,9 @@ class AlfaMainActivity : ComponentActivity() {
         configureObd()
         refreshSavedAdapter()
         appendLog("Файл журнала: ${liveLog.displayPath()}")
+        themeMode = settingsPrefs.getString("theme_mode", "system") ?: "system"
         setContent {
-            DiagnosticTheme {
+            DiagnosticTheme(darkTheme = resolveDark()) {
                 Box(Modifier.fillMaxSize()) {
                     MainScreen(
                         carTitle = currentCar?.title() ?: "Автомобиль не выбран",
@@ -389,19 +389,20 @@ class AlfaMainActivity : ComponentActivity() {
                                 connected = obdConnected,
                                 errorCodes = errorCodes,
                                 landscape = dashboardLandscape,
-                                onBack = { dashboardPro = false; ElmSession.extendedPids = false },
+                                onBack = { dashboardPro = false; ElmSession.extendedPids = false; setSystemBarIcons(lightIcons = resolveDark()) },
                                 onClose = { closeDashboard() }
                             )
                         } else {
                             DashboardScreen(
                                 values = obdValues,
                                 connected = obdConnected,
+                                darkTheme = resolveDark(),
                                 landscape = dashboardLandscape,
                                 tripKm = tripKm,
                                 tripSec = tripSec,
                                 onToggleOrientation = { toggleDashboardOrientation() },
                                 onResetTrip = { tripKm = 0.0; tripSec = 0; lastTripTick = 0L },
-                                onOpenPro = { dashboardPro = true; ElmSession.extendedPids = true },
+                                onOpenPro = { dashboardPro = true; ElmSession.extendedPids = true; setSystemBarIcons(lightIcons = resolveDark()) },
                                 onClose = { closeDashboard() }
                             )
                         }
@@ -485,6 +486,8 @@ class AlfaMainActivity : ComponentActivity() {
                     lastBackupTime = lastBackupTime,
                     lastRestoreTime = lastRestoreTime,
                     backupLocation = backupLocationLabel(),
+                    themeMode = themeMode,
+                    onThemeChange = { applyThemeMode(it) },
                     onCreateCode = { createTransferCode() },
                     onRedeem = { redeemTransferCode(it) },
                     onBackup = { backupMessage = null; createBackup(false) },
@@ -1209,6 +1212,28 @@ class AlfaMainActivity : ComponentActivity() {
         setKeepScreenOn(recording || dashboardOpen)
     }
 
+    private fun isSystemDark(): Boolean =
+        (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+
+    private fun resolveDark(): Boolean = when (themeMode) {
+        "light" -> false
+        "dark" -> true
+        else -> isSystemDark()
+    }
+
+    private fun applyThemeMode(mode: String) {
+        themeMode = mode
+        settingsPrefs.edit().putString("theme_mode", mode).apply()
+        setSystemBarIcons(lightIcons = resolveDark())
+    }
+
+    private fun setSystemBarIcons(lightIcons: Boolean) {
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = !lightIcons
+            isAppearanceLightNavigationBars = !lightIcons
+        }
+    }
+
     private fun toggleRecording() {
         if (currentCar == null) { firstCarDialog = true; return }
         if (recorder != null) { stopRecording(recorder!!, false); return }
@@ -1261,6 +1286,7 @@ class AlfaMainActivity : ComponentActivity() {
         dashboardLandscape = settingsPrefs.getBoolean("dashboard_landscape", false)
         dashboardOpen = true
         refreshKeepScreenOn()
+        setSystemBarIcons(lightIcons = resolveDark())
         applyDashboardOrientation()
         tripHandler.removeCallbacks(tripTick)
         tripHandler.post(tripTick)
@@ -1271,6 +1297,7 @@ class AlfaMainActivity : ComponentActivity() {
         dashboardPro = false
         ElmSession.extendedPids = false
         refreshKeepScreenOn()
+        setSystemBarIcons(lightIcons = resolveDark())
         tripHandler.removeCallbacks(tripTick)
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
     }
@@ -1285,6 +1312,11 @@ class AlfaMainActivity : ComponentActivity() {
         requestedOrientation = if (dashboardLandscape)
             ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         else ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        setSystemBarIcons(lightIcons = resolveDark())
     }
 
     override fun onDestroy() {
@@ -1374,21 +1406,21 @@ private fun MainScreen(
                 Button(onClick = onAddCar, modifier = Modifier.weight(1f)) { Text("+ Добавить") }
             }
             Row(Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                Button(onClick = onHistory, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite)) { Text("История") }
+                Button(onClick = onHistory, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onBackground)) { Text("История") }
                 Spacer(Modifier.width(8.dp))
-                Button(onClick = onServiceBook, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite)) { Text("Сервис") }
+                Button(onClick = onServiceBook, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onBackground)) { Text("Сервис") }
             }
             Row(Modifier.fillMaxWidth().padding(top = 8.dp)) {
-                Button(onClick = onAccount, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite)) { Text("Аккаунт") }
+                Button(onClick = onAccount, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onBackground)) { Text("Аккаунт") }
                 Spacer(Modifier.width(8.dp))
-                Button(onClick = onHelp, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite)) { Text("Помощь") }
+                Button(onClick = onHelp, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onBackground)) { Text("Помощь") }
             }
-            HorizontalDivider(Modifier.padding(top = 14.dp), color = DiagGray)
+            HorizontalDivider(Modifier.padding(top = 14.dp), color = MaterialTheme.colorScheme.surfaceVariant)
             if (obdBusy) {
                 Row(Modifier.fillMaxWidth().padding(top = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(12.dp))
-                    Text(obdBusyText, color = DiagLightGray, fontSize = 16.sp)
+                    Text(obdBusyText, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 16.sp)
                 }
             } else {
                 when {
@@ -1400,7 +1432,7 @@ private fun MainScreen(
                     ) { Text("Отключить") }
                     savedLabel.isNotBlank() -> {
                         Button(onClick = onConnectSaved, enabled = carEnabled, modifier = Modifier.fillMaxWidth().padding(top = 14.dp)) { Text("Подключить: $savedLabel") }
-                        Button(onClick = onChooseNew, enabled = carEnabled, colors = ButtonDefaults.buttonColors(containerColor = DiagGray), modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Выбрать другой адаптер") }
+                        Button(onClick = onChooseNew, enabled = carEnabled, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Выбрать другой адаптер") }
                     }
                     else -> Button(onClick = onChooseNew, enabled = carEnabled, modifier = Modifier.fillMaxWidth().padding(top = 14.dp)) { Text("Подключить ELM327") }
                 }
@@ -1417,7 +1449,7 @@ private fun MainScreen(
             Button(
                 onClick = onDashboard,
                 enabled = carEnabled,
-                colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onBackground),
                 modifier = Modifier.fillMaxWidth().padding(top = 14.dp)
             ) { Text("ПРИБОРНАЯ ПАНЕЛЬ") }
             Button(
@@ -1433,14 +1465,14 @@ private fun MainScreen(
             )
             Text(
                 if (recording) "Запись: ${formatDuration(recordElapsedSec)} / 5:00" else recordStatusText,
-                color = DiagLightGray,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 16.sp,
                 modifier = Modifier.padding(top = 8.dp, bottom = 16.dp)
             )
 
             /*
             if (showObdLog) {
-                HorizontalDivider(color = DiagGray)
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                 Text("Журнал OBD", color = MaterialTheme.colorScheme.onBackground, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = onShareLog) { Text("Отправить") }
@@ -1450,7 +1482,7 @@ private fun MainScreen(
                 LaunchedEffect(obdLog.size) { logScroll.animateScrollTo(logScroll.maxValue) }
                 Text(
                     if (obdLog.isEmpty()) "Пока пусто." else obdLog.joinToString("\n"),
-                    color = DiagLightGray,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace,
                     modifier = Modifier
@@ -1478,7 +1510,7 @@ private fun FirstCarDialog(onAdd: () -> Unit, onRestore: () -> Unit) {
                 Text(
                     "Если у вас уже есть резервная копия AlfaDiag (после переустановки приложения или с другого телефона), восстановите её — вернутся автомобили, диагностики, сервисная книжка, чаты и PDF.",
                     fontSize = 13.sp,
-                    color = DiagLightGray
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         },
@@ -1511,7 +1543,7 @@ private fun CarsDialog(
                         Spacer(Modifier.width(8.dp))
                         Text(car.title(), modifier = Modifier.weight(1f))
                         IconButton(onClick = { onEdit(car) }) {
-                            Icon(Icons.Filled.Edit, contentDescription = "Изменить автомобиль", tint = DiagLightGray)
+                            Icon(Icons.Filled.Edit, contentDescription = "Изменить автомобиль", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         IconButton(onClick = { onDelete(car) }) {
                             Icon(Icons.Filled.Delete, contentDescription = "Удалить автомобиль", tint = MaterialTheme.colorScheme.error)
@@ -1596,8 +1628,8 @@ private fun ObdDevicesDialog(devices: List<ObdDevice>, hint: String = "", onSele
         title = { Text("Выберите OBD-адаптер") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                if (hint.isNotBlank()) Text(hint, color = DiagLightGray, fontSize = 14.sp, modifier = Modifier.padding(bottom = 12.dp))
-                if (devices.isEmpty()) Text("Список пуст.", color = DiagLightGray)
+                if (hint.isNotBlank()) Text(hint, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp, modifier = Modifier.padding(bottom = 12.dp))
+                if (devices.isEmpty()) Text("Список пуст.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 devices.forEach { d ->
                     Text(d.label(), modifier = Modifier.fillMaxWidth().clickable { onSelect(d) }.padding(vertical = 12.dp))
                 }
@@ -1656,6 +1688,8 @@ private fun AccountDialog(
     lastBackupTime: Long,
     lastRestoreTime: Long,
     backupLocation: String,
+    themeMode: String,
+    onThemeChange: (String) -> Unit,
     onCreateCode: () -> Unit,
     onRedeem: (String) -> Unit,
     onBackup: () -> Unit,
@@ -1678,19 +1712,29 @@ private fun AccountDialog(
                     Text(subscriptionLabel(subscriptionUntil))
                 }
                 Spacer(Modifier.height(14.dp))
+                Text("Тема", fontWeight = FontWeight.Bold)
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    ThemeChoice("Системная", "system", themeMode, onThemeChange, Modifier.weight(1f))
+                    ThemeChoice("Светлая", "light", themeMode, onThemeChange, Modifier.weight(1f))
+                    ThemeChoice("Тёмная", "dark", themeMode, onThemeChange, Modifier.weight(1f))
+                }
+                Spacer(Modifier.height(14.dp))
                 Button(
                     onClick = onCreateCode,
                     enabled = !busy && !accountId.isNullOrBlank(),
                     modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = DiagGray)
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                 ) { Text("Создать код переноса") }
                 if (transferCode != null) {
                     Spacer(Modifier.height(8.dp))
                     Text("Код переноса: $transferCode", fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                    Text("Введите его на новом телефоне ниже. Код действует 20 минут и сработает один раз.", fontSize = 13.sp, color = DiagLightGray)
+                    Text("Введите его на новом телефоне ниже. Код действует 20 минут и сработает один раз.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Spacer(Modifier.height(16.dp))
-                HorizontalDivider(color = DiagGray)
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                 Spacer(Modifier.height(12.dp))
                 Text("Перенос на этот телефон", fontWeight = FontWeight.Bold)
                 OutlinedTextField(
@@ -1710,42 +1754,42 @@ private fun AccountDialog(
                     Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 14.sp)
                 }
                 Spacer(Modifier.height(16.dp))
-                HorizontalDivider(color = DiagGray)
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                 Spacer(Modifier.height(12.dp))
                 Text("Резервная копия", fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(4.dp))
                 Text(
                     "Сохраните все данные приложения в один архив (.zip): автомобили, диагностики, сервисную книжку, чаты с ИИ, PDF-заключения и файлы сессий. Это нужно при переустановке приложения или переносе на новый телефон. Архив содержит личные данные, поэтому храните его в надёжном месте.",
                     fontSize = 13.sp,
-                    color = DiagLightGray
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(10.dp))
                 if (lastBackupTime > 0) {
                     Text("Последняя копия: ${formatDateTime(lastBackupTime)}", fontWeight = FontWeight.Bold)
                     lastBackupName?.let { Text("Файл: $it", fontSize = 13.sp, fontFamily = FontFamily.Monospace) }
-                    Text("Путь: $backupLocation", fontSize = 13.sp, color = DiagLightGray)
+                    Text("Путь: $backupLocation", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 } else {
-                    Text("Резервных копий пока нет.", fontSize = 13.sp, color = DiagLightGray)
+                    Text("Резервных копий пока нет.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (lastRestoreTime > 0) {
                     Spacer(Modifier.height(4.dp))
-                    Text("Последнее восстановление: ${formatDateTime(lastRestoreTime)}", fontSize = 13.sp, color = DiagLightGray)
+                    Text("Последнее восстановление: ${formatDateTime(lastRestoreTime)}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Spacer(Modifier.height(10.dp))
                 Button(
                     onClick = onBackup,
                     modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = DiagGray)
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                 ) { Text("Сохранить копию сейчас", fontSize = 14.sp) }
                 Button(
                     onClick = onRestore,
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = DiagGray)
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                 ) { Text("Восстановить из копии", fontSize = 14.sp) }
                 Text(
                     "Копии создаются автоматически при запуске приложения и далее каждые 10 минут (хранятся 3 последние).",
                     fontSize = 12.sp,
-                    color = DiagLightGray,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp)
                 )
                 backupMessage?.let {
@@ -1756,6 +1800,28 @@ private fun AccountDialog(
         },
         confirmButton = { TextButton(onClick = onClose) { Text("Закрыть") } }
     )
+}
+
+@Composable
+private fun ThemeChoice(
+    label: String,
+    value: String,
+    selected: String,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val isSelected = selected == value
+    Button(
+        onClick = { onSelect(value) },
+        modifier = modifier.height(40.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onBackground
+        ),
+        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+    ) {
+        Text(label, fontSize = 11.sp, maxLines = 1, textAlign = TextAlign.Center)
+    }
 }
 
 @Composable
@@ -1796,7 +1862,7 @@ private fun HistoryDialog(carTitle: String, records: List<DiagnosticRecordStore.
                         )
                         FilledIconButton(
                             onClick = { onDelete(record) },
-                            colors = IconButtonDefaults.filledIconButtonColors(containerColor = DiagButtonGray)
+                            colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                         ) { Icon(Icons.Filled.Delete, contentDescription = "Удалить", tint = DiagRed) }
                     }
                     FlowRow(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1811,7 +1877,7 @@ private fun HistoryDialog(carTitle: String, records: List<DiagnosticRecordStore.
         confirmButton = {
             Button(
                 onClick = onClose,
-                colors = ButtonDefaults.buttonColors(containerColor = DiagButtonGray, contentColor = DiagRed)
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = DiagRed)
             ) { Text("Закрыть") }
         }
     )
@@ -1821,7 +1887,7 @@ private fun HistoryDialog(carTitle: String, records: List<DiagnosticRecordStore.
 private fun HistoryActionButton(text: String, onClick: () -> Unit) {
     Button(
         onClick = onClick,
-        colors = ButtonDefaults.buttonColors(containerColor = DiagButtonGray, contentColor = DiagRed),
+        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = DiagRed),
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
     ) { Text(text, fontSize = 14.sp) }
 }
@@ -1969,14 +2035,14 @@ private fun ServiceBookScreen(car: Car, entries: List<ServiceEntry>, hints: List
                 Text("Сервисная книжка", fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 TextButton(onClick = onBack) { Text("Назад") }
             }
-            Text(car.title(), color = DiagLightGray, fontSize = 16.sp, modifier = Modifier.padding(bottom = 8.dp))
+            Text(car.title(), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 16.sp, modifier = Modifier.padding(bottom = 8.dp))
             Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())) {
                 if (hints.isNotEmpty()) {
                     Text("Подсказки (ориентировочно)", fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.padding(bottom = 6.dp))
-                    hints.forEach { Text("• $it", color = DiagLightGray, fontSize = 15.sp, modifier = Modifier.padding(bottom = 4.dp)) }
-                    HorizontalDivider(Modifier.padding(vertical = 12.dp), color = DiagGray)
+                    hints.forEach { Text("• $it", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp, modifier = Modifier.padding(bottom = 4.dp)) }
+                    HorizontalDivider(Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.surfaceVariant)
                 }
-                if (entries.isEmpty()) Text("Записей пока нет. Добавьте первую.", color = DiagLightGray)
+                if (entries.isEmpty()) Text("Записей пока нет. Добавьте первую.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 entries.forEach { e ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f).clickable { onEdit(e) }) {
@@ -1987,11 +2053,11 @@ private fun ServiceBookScreen(car: Car, entries: List<ServiceEntry>, hints: List
                             ).joinToString(" · ")
                             if (head.isNotBlank()) Text(head, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                             if (e.title.isNotBlank()) Text(e.title, fontSize = 16.sp)
-                            if (e.note.isNotBlank()) Text(e.note, color = DiagLightGray, fontSize = 14.sp)
+                            if (e.note.isNotBlank()) Text(e.note, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
                         }
                         IconButton(onClick = { onDelete(e) }) { Icon(Icons.Filled.Delete, contentDescription = "Удалить", tint = DiagRed) }
                     }
-                    HorizontalDivider(color = DiagGray)
+                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                 }
             }
             Button(onClick = onAdd, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("+ Добавить запись") }
@@ -2062,17 +2128,17 @@ private fun HelpScreen(onClose: () -> Unit) {
             Spacer(Modifier.height(24.dp))
             Text(s.title, fontSize = 24.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
             Spacer(Modifier.height(12.dp))
-            Text(s.text, fontSize = 16.sp, color = DiagLightGray, textAlign = TextAlign.Center)
+            Text(s.text, fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
             Spacer(Modifier.height(24.dp))
             Row {
                 steps.indices.forEach { i ->
-                    Box(Modifier.padding(4.dp).size(if (i == step) 10.dp else 8.dp).clip(CircleShape).background(if (i == step) DiagRed else DiagGray))
+                    Box(Modifier.padding(4.dp).size(if (i == step) 10.dp else 8.dp).clip(CircleShape).background(if (i == step) DiagRed else MaterialTheme.colorScheme.surfaceVariant))
                 }
             }
             Spacer(Modifier.height(24.dp))
             Row(Modifier.fillMaxWidth()) {
                 if (step > 0) {
-                    Button(onClick = { step-- }, colors = ButtonDefaults.buttonColors(containerColor = DiagGray), modifier = Modifier.weight(1f)) { Text("Назад") }
+                    Button(onClick = { step-- }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.weight(1f)) { Text("Назад") }
                     Spacer(Modifier.width(8.dp))
                 }
                 if (step < steps.lastIndex) Button(onClick = { step++ }, modifier = Modifier.weight(1f)) { Text("Далее") }
@@ -2104,7 +2170,7 @@ private fun WelcomeScreen(onDismiss: () -> Unit, onHelp: () -> Unit) {
                     Spacer(Modifier.height(18.dp))
                     Button(
                         onClick = onHelp,
-                        colors = ButtonDefaults.buttonColors(containerColor = DiagGray, contentColor = DiagWhite),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onBackground),
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)
                     ) { Text("Как пользоваться") }
                     Spacer(Modifier.height(18.dp))

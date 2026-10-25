@@ -1,6 +1,7 @@
 package com.example.diagnostictool
 
 import android.content.ContentValues
+import android.content.res.Configuration
 import android.os.Bundle
 import android.provider.MediaStore
 import android.widget.Toast
@@ -48,9 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.diagnostictool.ui.theme.DiagGray
-import com.example.diagnostictool.ui.theme.DiagLightGray
-import com.example.diagnostictool.ui.theme.DiagWhite
+import androidx.core.view.WindowCompat
 import com.example.diagnostictool.ui.theme.DiagnosticTheme
 import kotlinx.coroutines.flow.collectLatest
 import org.json.JSONArray
@@ -79,10 +78,12 @@ class DiagnosticChatActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        val darkTheme = resolveDarkTheme()
+        setSystemBarIcons(lightIcons = darkTheme)
         diagnosticId = intent.getStringExtra("diagnostic_id") ?: run { finish(); return }
         sessionName = intent.getStringExtra("session_name") ?: "diagnostic"
         setContent {
-            DiagnosticTheme {
+            DiagnosticTheme(darkTheme = darkTheme) {
                 ChatScreen(
                     stageText = stageText, chatLines = chatLines, questionText = questionText,
                     answerHint = answerHint, answerText = answerText, answerEnabled = answerEnabled,
@@ -93,6 +94,22 @@ class DiagnosticChatActivity : ComponentActivity() {
             }
         }
         poll()
+    }
+
+    private fun resolveDarkTheme(): Boolean {
+        val mode = getSharedPreferences("settings", MODE_PRIVATE).getString("theme_mode", "system")
+        return when (mode) {
+            "light" -> false
+            "dark" -> true
+            else -> (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        }
+    }
+
+    private fun setSystemBarIcons(lightIcons: Boolean) {
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = !lightIcons
+            isAppearanceLightNavigationBars = !lightIcons
+        }
     }
 
     private fun poll() {
@@ -253,7 +270,7 @@ private fun ChatScreen(
                     .padding(horizontal = 16.dp, vertical = 4.dp)
             ) {
                 if (stageText.isNotBlank()) {
-                    Text(stageText, fontSize = 16.sp, color = DiagLightGray, modifier = Modifier.padding(bottom = 10.dp))
+                    Text(stageText, fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 10.dp))
                 }
                 chatLines.forEach { line ->
                     val isUser = line.role == "user"
@@ -262,13 +279,13 @@ private fun ChatScreen(
                         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
                     ) {
                         Surface(
-                            color = if (isUser) MaterialTheme.colorScheme.primary else DiagGray,
+                            color = if (isUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
                             shape = RoundedCornerShape(16.dp),
                             modifier = Modifier.widthIn(max = 300.dp)
                         ) {
                             Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                                Text(if (isUser) "Вы" else "ИИ", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (isUser) DiagWhite else DiagLightGray)
-                                Text(line.text, fontSize = 16.sp, color = DiagWhite)
+                                Text(if (isUser) "Вы" else "ИИ", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (isUser) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(line.text, fontSize = 16.sp, color = if (isUser) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     }
@@ -279,13 +296,13 @@ private fun ChatScreen(
                 Text(
                     questionText,
                     fontSize = 15.sp,
-                    color = DiagLightGray,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp)
                 )
             }
 
             Surface(
-                color = DiagGray,
+                color = MaterialTheme.colorScheme.surfaceVariant,
                 shape = RoundedCornerShape(24.dp),
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
             ) {
@@ -295,14 +312,14 @@ private fun ChatScreen(
                             value = answerText,
                             onValueChange = onAnswerChange,
                             enabled = answerEnabled,
-                            textStyle = TextStyle(color = DiagWhite, fontSize = 16.sp),
+                            textStyle = TextStyle(color = MaterialTheme.colorScheme.onBackground, fontSize = 16.sp),
                             cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                             maxLines = 5,
                             modifier = Modifier.weight(1f).padding(vertical = 6.dp),
                             decorationBox = { inner ->
                                 Box(Modifier.fillMaxWidth()) {
                                     if (answerText.isEmpty()) {
-                                        Text(answerHint, color = DiagLightGray, fontSize = 16.sp)
+                                        Text(answerHint, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 16.sp)
                                     }
                                     inner()
                                 }

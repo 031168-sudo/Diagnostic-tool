@@ -5,4 +5,5 @@
     <color name="diag_light_gray">#B8B8B8</color>
     <color name="diag_white">#F5F5F5</color>
     <color name="diag_red">#B71800</color>
+    <color name="diag_background">#F6F6F6</color>
 </resources>

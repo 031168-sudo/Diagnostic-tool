@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -25,12 +26,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.diagnostictool.ui.theme.DiagBlack
-import com.example.diagnostictool.ui.theme.DiagGray
 import com.example.diagnostictool.ui.theme.DiagGreen
-import com.example.diagnostictool.ui.theme.DiagLightGray
 import com.example.diagnostictool.ui.theme.DiagRed
-import com.example.diagnostictool.ui.theme.DiagWhite
 import java.util.Locale
 import kotlin.math.abs
 
@@ -72,10 +69,10 @@ fun ProDashboardScreen(
 
     val columns = if (landscape) 3 else 2
 
-    Surface(color = DiagBlack, modifier = Modifier.fillMaxSize()) {
+    Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 12.dp, vertical = 8.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Диагностика", color = DiagWhite, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text("Диагностика", color = MaterialTheme.colorScheme.onBackground, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 Text(
                     if (connected) "OBD подключён" else "OBD не подключён",
                     color = if (connected) DiagGreen else DiagRed,
@@ -103,13 +100,13 @@ fun ProDashboardScreen(
                 Button(
                     onClick = onBack,
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = DiagGray),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                     contentPadding = PaddingValues(vertical = 6.dp)
                 ) { Text("← Приборка", fontSize = 13.sp) }
                 Button(
                     onClick = onClose,
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = DiagGray),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                     contentPadding = PaddingValues(vertical = 6.dp)
                 ) { Text("Закрыть", fontSize = 13.sp) }
             }
@@ -121,19 +118,19 @@ private data class ProfTile(
     val label: String,
     val value: String,
     val unit: String = "",
-    val accent: Color = DiagWhite
+    val accent: Color? = null
 )
 
 @Composable
 private fun ProfTileView(tile: ProfTile, modifier: Modifier = Modifier) {
     Column(
-        modifier.background(DiagGray, RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 7.dp)
+        modifier.background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp)).padding(horizontal = 10.dp, vertical = 7.dp)
     ) {
-        Text(tile.label, fontSize = 11.sp, color = DiagLightGray, maxLines = 1)
+        Text(tile.label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
         Row(verticalAlignment = Alignment.Bottom) {
-            Text(tile.value, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = tile.accent, maxLines = 1)
+            Text(tile.value, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = tile.accent ?: MaterialTheme.colorScheme.onBackground, maxLines = 1)
             if (tile.unit.isNotBlank()) {
-                Text(" ${tile.unit}", fontSize = 11.sp, color = DiagLightGray, modifier = Modifier.padding(bottom = 2.dp))
+                Text(" ${tile.unit}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 2.dp))
             }
         }
     }
@@ -144,7 +141,7 @@ private fun DtcBlock(milOn: Boolean?, dtcCount: Int?, codes: List<String>) {
     val mil = milOn ?: codes.isNotEmpty()
     Column(
         Modifier.fillMaxWidth()
-            .background(if (mil) DiagRed.copy(alpha = 0.16f) else DiagGray, RoundedCornerShape(10.dp))
+            .background(if (mil) DiagRed.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp))
             .padding(10.dp)
     ) {
         Text(
@@ -153,15 +150,16 @@ private fun DtcBlock(milOn: Boolean?, dtcCount: Int?, codes: List<String>) {
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold
         )
-        Text("Кодов: ${dtcCount ?: codes.size}", fontSize = 12.sp, color = DiagLightGray, modifier = Modifier.padding(top = 2.dp))
+        Text("Кодов: ${dtcCount ?: codes.size}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
         if (codes.isNotEmpty()) {
-            Text(codes.joinToString("   "), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = DiagWhite, modifier = Modifier.padding(top = 4.dp))
+            Text(codes.joinToString("   "), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.padding(top = 4.dp))
         }
     }
 }
 
+@Composable
 private fun trimColor(v: Double?): Color = when {
-    v == null -> DiagLightGray
+    v == null -> MaterialTheme.colorScheme.onSurfaceVariant
     abs(v) < 10.0 -> DiagGreen
     abs(v) < 20.0 -> Amber
     else -> DiagRed
