@@ -3,19 +3,17 @@
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
+    <!-- Аккумулятор: корпус, клемма, молния -->
     <path
         android:fillColor="#00000000"
         android:strokeColor="#FFFFFFFF"
-        android:strokeWidth="2.5"
+        android:strokeWidth="1.8"
         android:strokeLineJoin="round"
-        android:pathData="M6,7h12a2,2 0 0 1 2,2v6a2,2 0 0 1 -2,2H6a2,2 0 0 1 -2,-2V9a2,2 0 0 1 2,-2z" />
+        android:pathData="M3.5,7.5a1.5,1.5 0 0 1 1.5,-1.5h12a1.5,1.5 0 0 1 1.5,1.5v9a1.5,1.5 0 0 1 -1.5,1.5h-12a1.5,1.5 0 0 1 -1.5,-1.5z" />
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M9,4h6v3H9z" />
+        android:pathData="M21,10h0.8v4H21z" />
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M6,12h4v2H6z" />
-    <path
-        android:fillColor="#FFFFFFFF"
-        android:pathData="M13,10.5h2v1.5h1.5v2H15v1.5h-2v-1.5h-1.5v-2H13z" />
+        android:pathData="M13.2,8.6L9.4,12.9H12.1L10.8,15.4L14.6,11.1H11.9Z" />
 </vector>

@@ -21,6 +21,8 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -190,17 +192,26 @@ private fun DashboardPortrait(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             IconCard(
-                R.drawable.ic_coolant, m.coolant?.let { fmt0(it) } ?: "—", "°C",
-                coolantColor(m.coolant), Modifier.weight(1f).fillMaxHeight(),
+                iconRes = R.drawable.ic_coolant, label = "ОЖ",
+                value = m.coolant?.let { fmt0(it) } ?: "—", unit = "°C",
+                accent = coolantColor(m.coolant), modifier = Modifier.weight(1f).fillMaxHeight(),
                 bar = {
                     SegmentedBar(
                         m.coolant, 40.0, 120.0, 8, coolantColor(m.coolant),
-                        Modifier.fillMaxWidth().padding(top = 3.dp)
+                        Modifier.fillMaxWidth().padding(top = 4.dp)
                     )
                 }
             )
-            IconCard(R.drawable.ic_battery, m.voltage?.let { fmt1(it) } ?: "—", "В", voltageColor(m.voltage), Modifier.weight(1f).fillMaxHeight())
-            IconCard(R.drawable.ic_ambient, m.ambient?.let { fmt0(it) } ?: "—", "°C", ambientColor(m.ambient), Modifier.weight(1f).fillMaxHeight())
+            IconCard(
+                iconRes = R.drawable.ic_battery, label = "АКБ",
+                value = m.voltage?.let { fmt1(it) } ?: "—", unit = "В",
+                accent = voltageColor(m.voltage), modifier = Modifier.weight(1f).fillMaxHeight()
+            )
+            IconCard(
+                iconRes = R.drawable.ic_ambient, label = "ЗА БОРТОМ",
+                value = m.ambient?.let { fmt0(it) } ?: "—", unit = "°C",
+                accent = ambientColor(m.ambient), modifier = Modifier.weight(1f).fillMaxHeight()
+            )
         }
         TripRow(tripKm, tripSec, clock, onReset)
         BottomBar(onToggle, onClose)
@@ -305,25 +316,38 @@ private fun CenterPanel(m: DashModel, modifier: Modifier = Modifier) {
 @Composable
 private fun IconCard(
     iconRes: Int,
+    label: String,
     value: String,
     unit: String,
-    color: Color,
+    accent: Color,
     modifier: Modifier = Modifier,
     bar: (@Composable () -> Unit)? = null
 ) {
     val p = LocalDashPalette.current
+    val shape = RoundedCornerShape(14.dp)
     Column(
-        modifier.background(p.panel, RoundedCornerShape(14.dp)).padding(horizontal = 6.dp, vertical = 6.dp),
+        modifier
+            .clip(shape)
+            .background(p.panel)
+            // Статус выводится тонкой полоской сверху: цифры остаются одного цвета и читаются ровно
+            .drawBehind { drawRect(accent, Offset.Zero, Size(size.width, 3.dp.toPx())) }
+            .padding(horizontal = 6.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Icon(painterResource(iconRes), contentDescription = null, tint = p.text, modifier = Modifier.size(40.dp))
-        Row(verticalAlignment = Alignment.Bottom) {
+        Icon(painterResource(iconRes), contentDescription = null, tint = p.muted, modifier = Modifier.size(22.dp))
+        Text(
+            label, color = p.muted, fontSize = 9.sp, fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.8.sp, maxLines = 1, modifier = Modifier.padding(top = 2.dp)
+        )
+        Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.padding(top = 2.dp)) {
             Text(
-                value, color = color, fontSize = 22.sp, fontWeight = FontWeight.Bold,
-                maxLines = 1, textAlign = TextAlign.End, modifier = Modifier.width(50.dp)
+                value, color = p.text, fontSize = 24.sp, fontWeight = FontWeight.Bold,
+                maxLines = 1, textAlign = TextAlign.End, fontFeatureSettings = "tnum",
+                modifier = Modifier.width(54.dp)
             )
-            Text(" $unit", color = p.muted, fontSize = 10.sp, modifier = Modifier.padding(bottom = 3.dp), maxLines = 1)
+            Text(" $unit", color = p.muted, fontSize = 11.sp, fontWeight = FontWeight.Medium,
+                modifier = Modifier.padding(bottom = 4.dp), maxLines = 1)
         }
         bar?.invoke()
     }
