@@ -36,6 +36,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
@@ -121,7 +122,8 @@ fun DashboardScreen(
     onOpenPro: () -> Unit,
     onClose: () -> Unit
 ) {
-    val demo = rememberDemoValues(enabled = DEMO_WITHOUT_OBD && !connected)
+    var demoOn by rememberSaveable { mutableStateOf(false) }
+    val demo = rememberDemoValues(enabled = demoOn)
     val model = if (demo != null) demo else DashModel(
         speed = values.speed,
         rpm = values.rpm,
@@ -136,9 +138,9 @@ fun DashboardScreen(
     CompositionLocalProvider(LocalDashPalette provides palette) {
         Surface(color = palette.bg, modifier = Modifier.fillMaxSize()) {
             if (landscape) {
-                DashboardLandscape(model, tripKm, tripSec, clock, onToggleOrientation, onResetTrip, onOpenPro, onClose)
+                DashboardLandscape(model, tripKm, tripSec, clock, demoOn, { demoOn = !demoOn }, onToggleOrientation, onResetTrip, onOpenPro, onClose)
             } else {
-                DashboardPortrait(model, tripKm, tripSec, clock, onToggleOrientation, onResetTrip, onOpenPro, onClose)
+                DashboardPortrait(model, tripKm, tripSec, clock, demoOn, { demoOn = !demoOn }, onToggleOrientation, onResetTrip, onOpenPro, onClose)
             }
         }
     }
@@ -155,12 +157,10 @@ private data class DashModel(
 )
 
 /**
- * ТЕСТОВЫЙ РЕЖИМ для проверки дизайна: пока OBD не подключён, приборная панель
- * показывает имитацию поездки (разгоны, переключения передач, прогрев ОЖ,
- * колебания напряжения и температуры за бортом). При реальном подключении
- * OBD всегда показываются настоящие данные. Для релиза поставить false.
+ * Демо-режим (кнопка «Демо» внизу приборки): имитация поездки — разгоны,
+ * переключения передач, прогрев ОЖ, колебания напряжения и температуры за бортом.
+ * Пока демо включено, вместо данных OBD показывается имитация.
  */
-private const val DEMO_WITHOUT_OBD = true
 
 @Composable
 private fun rememberDemoValues(enabled: Boolean): DashModel? {
@@ -205,6 +205,7 @@ private fun rememberClock(): String {
 @Composable
 private fun DashboardPortrait(
     m: DashModel, tripKm: Double, tripSec: Int, clock: String,
+    demoOn: Boolean, onDemo: () -> Unit,
     onToggle: () -> Unit, onReset: () -> Unit, onOpenPro: () -> Unit, onClose: () -> Unit
 ) {
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 10.dp, vertical = 6.dp)) {
@@ -248,13 +249,14 @@ private fun DashboardPortrait(
             )
         }
         TripRow(tripKm, tripSec, clock, onReset)
-        BottomBar(onToggle, onClose)
+        BottomBar(onToggle, demoOn, onDemo, onClose)
     }
 }
 
 @Composable
 private fun DashboardLandscape(
     m: DashModel, tripKm: Double, tripSec: Int, clock: String,
+    demoOn: Boolean, onDemo: () -> Unit,
     onToggle: () -> Unit, onReset: () -> Unit, onOpenPro: () -> Unit, onClose: () -> Unit
 ) {
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 12.dp, vertical = 6.dp)) {
@@ -285,7 +287,7 @@ private fun DashboardLandscape(
             }
         }
         TripRow(tripKm, tripSec, clock, onReset)
-        BottomBar(onToggle, onClose)
+        BottomBar(onToggle, demoOn, onDemo, onClose)
     }
 }
 
@@ -293,16 +295,16 @@ private fun DashboardLandscape(
 private fun TopBar(connected: Boolean, demo: Boolean, onOpenPro: () -> Unit) {
     val p = LocalDashPalette.current
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        TextButton(onClick = onOpenPro, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) {
-            Text("Диагностика →", color = p.ring, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-        }
-        Spacer(Modifier.weight(1f))
         Text(
             when { demo -> "ДЕМО"; connected -> "OBD"; else -> "НЕТ OBD" },
             color = when { demo -> Amber; connected -> p.green; else -> p.red },
-            fontSize = 10.sp,
+            fontSize = 11.sp,
             fontWeight = FontWeight.Bold
         )
+        Spacer(Modifier.weight(1f))
+        TextButton(onClick = onOpenPro, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) {
+            Text("Диагностика →", color = p.ring, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        }
     }
 }
 
@@ -416,7 +418,7 @@ private fun TripRow(tripKm: Double, tripSec: Int, clock: String, onReset: () -> 
 }
 
 @Composable
-private fun BottomBar(onToggle: () -> Unit, onClose: () -> Unit) {
+private fun BottomBar(onToggle: () -> Unit, demoOn: Boolean, onDemo: () -> Unit, onClose: () -> Unit) {
     val p = LocalDashPalette.current
     Row(Modifier.fillMaxWidth().padding(top = 3.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(
@@ -425,6 +427,16 @@ private fun BottomBar(onToggle: () -> Unit, onClose: () -> Unit) {
             colors = ButtonDefaults.buttonColors(containerColor = p.panel, contentColor = p.ring),
             contentPadding = PaddingValues(vertical = 0.dp)
         ) { Text("Сменить вид", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+        // «Демо» подсвечивается, пока режим включён; повторное нажатие выключает
+        Button(
+            onClick = onDemo,
+            modifier = Modifier.weight(1f).height(38.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (demoOn) Amber else p.panel,
+                contentColor = if (demoOn) Color.White else p.text
+            ),
+            contentPadding = PaddingValues(vertical = 0.dp)
+        ) { Text("Демо", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
         Button(
             onClick = onClose,
             modifier = Modifier.weight(1f).height(38.dp),
