@@ -48,6 +48,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -343,7 +344,8 @@ private fun IconCard(
         Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.padding(top = 2.dp)) {
             Text(
                 value, color = p.text, fontSize = 24.sp, fontWeight = FontWeight.Bold,
-                maxLines = 1, textAlign = TextAlign.End, fontFeatureSettings = "tnum",
+                maxLines = 1, textAlign = TextAlign.End,
+                style = TextStyle(fontFeatureSettings = "tnum"),
                 modifier = Modifier.width(54.dp)
             )
             Text(" $unit", color = p.muted, fontSize = 11.sp, fontWeight = FontWeight.Medium,
