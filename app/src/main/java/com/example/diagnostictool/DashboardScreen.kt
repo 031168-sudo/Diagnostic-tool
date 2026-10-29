@@ -104,6 +104,8 @@ private val LightDash = DashPalette(
 
 private val LocalDashPalette = staticCompositionLocalOf { DarkDash }
 
+internal fun dashAccent(darkTheme: Boolean): Color = if (darkTheme) Color(0xFF37C6F0) else Color(0xFF0E8FB8)
+
 internal val Amber = Color(0xFFC47A00)
 private val ColdBlue = Color(0xFF3E9BD1)
 private const val GAUGE_START = 120f
@@ -296,14 +298,15 @@ private fun TopBar(connected: Boolean, demo: Boolean, onOpenPro: () -> Unit) {
     val p = LocalDashPalette.current
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(
-            when { demo -> "ДЕМО"; connected -> "OBD"; else -> "НЕТ OBD" },
+            when { demo -> "ДЕМО"; connected -> "OBD подключен"; else -> "OBD не подключен" },
             color = when { demo -> Amber; connected -> p.green; else -> p.red },
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
         )
         Spacer(Modifier.weight(1f))
         TextButton(onClick = onOpenPro, contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp)) {
-            Text("Диагностика →", color = p.ring, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            Text("ДИАГНОСТИКА →", color = p.ring, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
         }
     }
 }

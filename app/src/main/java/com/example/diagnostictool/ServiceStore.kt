@@ -3,6 +3,9 @@ package com.example.diagnostictool
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 
 data class ServiceEntry(
@@ -27,40 +30,55 @@ data class ServiceEntry(
     }
 }
 
+data class ServiceMeta(
+    val carId: String,
+    val currentMileage: Int,
+    val currentDate: String,
+    val toInterval: Int = 15000,
+    val oilInterval: Int = 10000,
+    val notifyThreshold: Int = 500
+)
+
+data class ServiceDue(
+    val kind: String,
+    val lastMileage: Int,
+    val nextMileage: Int,
+    val remaining: Int,
+    val overdue: Boolean,
+    val dueSoon: Boolean
+)
+
 class ServiceStore(context: Context) {
     private val prefs = context.getSharedPreferences("service_book", Context.MODE_PRIVATE)
-    private val key = "items"
+    private val itemsKey = "items"
+    private val metaKey = "meta"
 
     companion object {
-        val KINDS = listOf("ТО", "Ремонт", "Прочее")
-        private val INTERVALS = listOf(
-            "масло" to 10000,
-            "грм" to 90000,
-            "ремень" to 90000,
-            "свеч" to 30000,
-            "фильтр" to 30000,
-            "воздушн" to 30000,
-            "салон" to 30000,
-            "топливн" to 40000,
-            "колодк" to 40000,
-            "тормоз" to 40000,
-            "антифриз" to 60000,
-            "жидкост" to 60000,
-            "акпп" to 60000,
-            "редуктор" to 60000
-        )
+        val KINDS = listOf("ТО", "Замена масла", "Ремонт", "Прочее")
+
+        fun emoji(kind: String): String = when (kind) {
+            "ТО" -> "🛠️"
+            "Замена масла" -> "🛢️"
+            "Ремонт" -> "🔧"
+            else -> "📝"
+        }
     }
 
     fun all(): List<ServiceEntry> {
-        val a = JSONArray(prefs.getString(key, "[]"))
+        val a = JSONArray(prefs.getString(itemsKey, "[]"))
         return (0 until a.length()).map { ServiceEntry.fromJson(a.getJSONObject(it)) }
     }
 
+    /** Сначала по дате (новые сверху), затем по пробегу. */
     fun forCar(carId: String): List<ServiceEntry> =
-        all().filter { it.carId == carId }.sortedByDescending { it.mileage.toIntOrNull() ?: 0 }
+        all().filter { it.carId == carId }
+            .sortedWith(
+                compareByDescending<ServiceEntry> { dateValue(it.date) }
+                    .thenByDescending { it.mileage.trim().toIntOrNull() ?: 0 }
+            )
 
     fun create(carId: String): ServiceEntry =
-        ServiceEntry(UUID.randomUUID().toString(), carId, "", "", "ТО", "", "")
+        ServiceEntry(UUID.randomUUID().toString(), carId, today(), "", "ТО", "", "")
 
     fun save(entry: ServiceEntry) {
         val list = all().toMutableList()
@@ -74,32 +92,84 @@ class ServiceStore(context: Context) {
     private fun write(list: List<ServiceEntry>) {
         val a = JSONArray()
         list.forEach { a.put(it.toJson()) }
-        prefs.edit().putString(key, a.toString()).apply()
+        prefs.edit().putString(itemsKey, a.toString()).apply()
     }
 
-    fun hints(car: Car, entries: List<ServiceEntry>): List<String> {
-        val currentMileage = car.mileage.trim().toIntOrNull()
-        val year = car.year.trim().toIntOrNull()
-        val oldCar = year != null && year <= 2014
-        val result = mutableListOf<String>()
-        val seen = mutableSetOf<String>()
-        for (e in entries.sortedByDescending { it.mileage.toIntOrNull() ?: 0 }) {
-            val text = (e.title + " " + e.note).lowercase()
-            val rule = INTERVALS.firstOrNull { text.contains(it.first) } ?: continue
-            if (rule.first in seen) continue
-            seen += rule.first
-            val m = e.mileage.trim().toIntOrNull() ?: continue
-            var interval = rule.second
-            if (rule.first == "масло" && oldCar) interval = 7000
-            val next = m + interval
-            val label = rule.first.replaceFirstChar { it.uppercase() }
-            val line = if (currentMileage != null) {
-                val rem = next - currentMileage
-                if (rem > 0) "$label: последнее на $m км → следующее ~$next км (осталось $rem км)"
-                else "$label: пора (следующее было ~$next км)"
-            } else "$label: последнее на $m км → следующее ~$next км"
-            result += line
+    // --- Текущий пробег/дата и интервалы ---
+
+    /**
+     * Метаданные сервисной книжки. При первом обращении пробег берётся из профиля
+     * автомобиля (пробег, введённый при добавлении), дата — сегодняшняя.
+     */
+    fun meta(car: Car): ServiceMeta {
+        val root = JSONObject(prefs.getString(metaKey, "{}"))
+        val o = root.optJSONObject(car.id)
+        if (o != null) {
+            return ServiceMeta(
+                carId = car.id,
+                currentMileage = o.optInt("currentMileage", initialMileage(car)),
+                currentDate = o.optString("currentDate", today()),
+                toInterval = o.optInt("toInterval", 15000),
+                oilInterval = o.optInt("oilInterval", 10000),
+                notifyThreshold = o.optInt("notifyThreshold", 500)
+            )
         }
-        return result
+        return ServiceMeta(
+            carId = car.id,
+            currentMileage = initialMileage(car),
+            currentDate = today()
+        ).also { saveMeta(it) }
     }
+
+    fun ensureMeta(car: Car) { meta(car) }
+
+    fun saveMeta(m: ServiceMeta) {
+        val root = JSONObject(prefs.getString(metaKey, "{}"))
+        root.put(m.carId, JSONObject().apply {
+            put("currentMileage", m.currentMileage)
+            put("currentDate", m.currentDate)
+            put("toInterval", m.toInterval)
+            put("oilInterval", m.oilInterval)
+            put("notifyThreshold", m.notifyThreshold)
+        })
+        prefs.edit().putString(metaKey, root.toString()).apply()
+    }
+
+    /** Сроки ТО и замены масла относительно текущего пробега. */
+    fun dues(car: Car): List<ServiceDue> {
+        val m = meta(car)
+        val entries = forCar(car.id)
+        val rules = listOf("ТО" to m.toInterval, "Замена масла" to m.oilInterval)
+        return rules.map { (kind, interval) ->
+            val relevant = entries.filter { e ->
+                if (kind == "Замена масла") {
+                    e.kind == "Замена масла" || e.title.contains("масл", ignoreCase = true)
+                } else {
+                    e.kind == "ТО" && !e.title.contains("масл", ignoreCase = true)
+                }
+            }
+            val last = relevant.mapNotNull { it.mileage.trim().toIntOrNull() }.maxOrNull()
+            val base = last ?: m.currentMileage
+            val next = base + interval
+            val remaining = next - m.currentMileage
+            ServiceDue(
+                kind = kind,
+                lastMileage = last ?: 0,
+                nextMileage = next,
+                remaining = remaining,
+                overdue = remaining < 0,
+                dueSoon = remaining in 0..m.notifyThreshold
+            )
+        }
+    }
+
+    private fun initialMileage(car: Car): Int =
+        car.mileage.filter { it.isDigit() }.toIntOrNull() ?: 0
+
+    private fun today(): String =
+        SimpleDateFormat("dd.MM.yyyy", Locale.US).format(Date())
+
+    private fun dateValue(s: String): Long = runCatching {
+        SimpleDateFormat("dd.MM.yyyy", Locale.US).apply { isLenient = false }.parse(s)?.time ?: 0L
+    }.getOrDefault(0L)
 }

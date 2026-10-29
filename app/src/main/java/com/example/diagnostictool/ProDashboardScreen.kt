@@ -11,11 +11,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -35,9 +37,12 @@ import kotlin.math.abs
 fun ProDashboardScreen(
     values: ObdValues,
     connected: Boolean,
+    darkTheme: Boolean,
     errorCodes: List<String>,
+    reportBusy: Boolean,
     landscape: Boolean,
     onBack: () -> Unit,
+    onReport: () -> Unit,
     onClose: () -> Unit
 ) {
     val tiles = buildList {
@@ -72,9 +77,9 @@ fun ProDashboardScreen(
     Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 12.dp, vertical = 8.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Диагностика", color = MaterialTheme.colorScheme.onBackground, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text("ДИАГНОСТИКА", color = dashAccent(darkTheme), fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 Text(
-                    if (connected) "OBD подключён" else "OBD не подключён",
+                    if (connected) "OBD подключен" else "OBD не подключен",
                     color = if (connected) DiagGreen else DiagRed,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold
@@ -82,7 +87,9 @@ fun ProDashboardScreen(
             }
 
             Spacer(Modifier.height(6.dp))
-            DtcBlock(values.milOn, values.dtcCount, errorCodes)
+            MilBlock(values.milOn)
+            Spacer(Modifier.height(6.dp))
+            ErrorsBlock(values.dtcCount, errorCodes)
 
             Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(top = 8.dp)) {
                 tiles.chunked(columns).forEach { rowTiles ->
@@ -96,19 +103,36 @@ fun ProDashboardScreen(
                 }
             }
 
-            Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Button(
                     onClick = onBack,
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onBackground),
                     contentPadding = PaddingValues(vertical = 6.dp)
-                ) { Text("← Приборка", fontSize = 13.sp) }
+                ) { Text("← Приборка", fontSize = 12.sp, maxLines = 1) }
+                Button(
+                    onClick = onReport,
+                    enabled = !reportBusy,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary),
+                    contentPadding = PaddingValues(vertical = 6.dp)
+                ) {
+                    if (reportBusy) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                    } else {
+                        Text("ОТЧЁТ", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                    }
+                }
                 Button(
                     onClick = onClose,
                     modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onBackground),
                     contentPadding = PaddingValues(vertical = 6.dp)
-                ) { Text("Закрыть", fontSize = 13.sp) }
+                ) { Text("Закрыть", fontSize = 12.sp, maxLines = 1) }
             }
         }
     }
@@ -137,22 +161,62 @@ private fun ProfTileView(tile: ProfTile, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun DtcBlock(milOn: Boolean?, dtcCount: Int?, codes: List<String>) {
-    val mil = milOn ?: codes.isNotEmpty()
+private fun MilBlock(milOn: Boolean?) {
+    val text = when (milOn) {
+        true -> "ВКЛ"
+        false -> "ВЫКЛ"
+        null -> "нет данных"
+    }
+    val color = when (milOn) {
+        true -> DiagRed
+        false -> DiagGreen
+        null -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Row(
+        Modifier.fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp))
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("Лампа Check Engine:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.weight(1f))
+        Text(text, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = color)
+    }
+}
+
+@Composable
+private fun ErrorsBlock(dtcCount: Int?, codes: List<String>) {
+    val count = if (codes.isNotEmpty()) codes.size else (dtcCount ?: 0)
+    val hasErrors = count > 0
     Column(
         Modifier.fillMaxWidth()
-            .background(if (mil) DiagRed.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp))
+            .background(
+                if (hasErrors) DiagRed.copy(alpha = 0.10f) else MaterialTheme.colorScheme.surfaceVariant,
+                RoundedCornerShape(10.dp)
+            )
             .padding(10.dp)
     ) {
         Text(
-            if (mil) "CHECK ENGINE: ОБНАРУЖЕНЫ ОШИБКИ" else "CHECK ENGINE: ошибок нет",
-            color = if (mil) DiagRed else DiagGreen,
+            if (hasErrors) "Ошибки: $count" else "Ошибок нет",
+            color = if (hasErrors) DiagRed else DiagGreen,
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold
         )
-        Text("Кодов: ${dtcCount ?: codes.size}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
-        if (codes.isNotEmpty()) {
-            Text(codes.joinToString("   "), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.padding(top = 4.dp))
+        if (codes.isEmpty() && (dtcCount ?: 0) > 0) {
+            Text(
+                "ЭБУ сообщает о кодах, но список не получен",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 3.dp)
+            )
+        }
+        codes.forEach { code ->
+            Text(
+                "$code — ${DtcCatalog.describe(code)}",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.padding(top = 3.dp)
+            )
         }
     }
 }

@@ -1,6 +1,9 @@
 package com.example.diagnostictool
 
 import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.ActivityInfo
@@ -97,6 +100,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import com.example.diagnostictool.ui.theme.DiagGreen
@@ -175,6 +180,7 @@ class AlfaMainActivity : ComponentActivity() {
             val wasBusy = obdBusy
             stopObdBusy()
             obdConnected = connected
+            refreshKeepScreenOn()
             if (connected) {
                 scanCount = null; showObdLog = true
                 Toast.makeText(this@AlfaMainActivity, "Подключено: ${pendingName.ifBlank { "OBD" }}", Toast.LENGTH_SHORT).show()
@@ -200,6 +206,7 @@ class AlfaMainActivity : ComponentActivity() {
     private var lastSessionUris: List<Uri> = emptyList()
     private val obdPermissionRequest = 10
     private val recordPermissionRequest = 11
+    private val notificationPermissionRequest = 12
 
     private val backupOpen = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { readBackup(it) }
@@ -214,6 +221,9 @@ class AlfaMainActivity : ComponentActivity() {
     private var showObdLog by mutableStateOf(false)
     private var dashboardOpen by mutableStateOf(false)
     private var dashboardPro by mutableStateOf(false)
+    private var reportBusy by mutableStateOf(false)
+    private var reportRequestedAt = 0L
+    private var reportValues: ObdValues? = null
     private var dashboardLandscape by mutableStateOf(false)
     private var tripKm by mutableStateOf(0.0)
     private var tripSec by mutableStateOf(0)
@@ -255,6 +265,8 @@ class AlfaMainActivity : ComponentActivity() {
     private var helpOpen by mutableStateOf(false)
     private var serviceBookOpen by mutableStateOf(false)
     private var serviceEditor by mutableStateOf<ServiceEntry?>(null)
+    private var serviceMetaDialog by mutableStateOf(false)
+    private var serviceSettingsDialog by mutableStateOf(false)
     private var serviceVersion by mutableStateOf(0)
     private val settingsPrefs by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
     private var themeMode by mutableStateOf("system")
@@ -299,6 +311,10 @@ class AlfaMainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        ensureNotificationChannel()
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), notificationPermissionRequest)
+        }
         configureObd()
         refreshSavedAdapter()
         appendLog("Файл журнала: ${liveLog.displayPath()}")
@@ -363,13 +379,19 @@ class AlfaMainActivity : ComponentActivity() {
 
                     if (serviceBookOpen) currentCar?.let { car ->
                         val entries = remember(serviceVersion, car.id) { serviceStore.forCar(car.id) }
+                        val meta = remember(serviceVersion, car.id) { serviceStore.meta(car) }
+                        val dues = remember(serviceVersion, car.id) { serviceStore.dues(car) }
                         ServiceBookScreen(
                             car = car,
                             entries = entries,
-                            hints = remember(serviceVersion, car.id) { serviceStore.hints(car, entries) },
+                            meta = meta,
+                            dues = dues,
                             onAdd = { serviceEditor = serviceStore.create(car.id) },
+                            onSavePdf = { saveServiceBookPdf() },
                             onEdit = { e -> serviceEditor = e },
-                            onDelete = { e -> serviceStore.delete(e.id); serviceVersion++ },
+                            onDelete = { e -> serviceStore.delete(e.id); serviceVersion++; checkServiceNotifications() },
+                            onUpdateMeta = { serviceMetaDialog = true },
+                            onSettings = { serviceSettingsDialog = true },
                             onBack = { serviceBookOpen = false }
                         )
                     }
@@ -377,8 +399,28 @@ class AlfaMainActivity : ComponentActivity() {
                     serviceEditor?.let { entry ->
                         ServiceEntryDialog(
                             entry = entry,
-                            onSave = { serviceStore.save(it); serviceVersion++; serviceEditor = null },
+                            onSave = { serviceStore.save(it); serviceVersion++; serviceEditor = null; checkServiceNotifications() },
                             onDismiss = { serviceEditor = null }
+                        )
+                    }
+
+                    if (serviceMetaDialog) currentCar?.let { car ->
+                        ServiceMileageDialog(
+                            meta = serviceStore.meta(car),
+                            onSave = { m ->
+                                serviceStore.saveMeta(m); serviceVersion++; serviceMetaDialog = false; checkServiceNotifications()
+                            },
+                            onDismiss = { serviceMetaDialog = false }
+                        )
+                    }
+
+                    if (serviceSettingsDialog) currentCar?.let { car ->
+                        ServiceSettingsDialog(
+                            meta = serviceStore.meta(car),
+                            onSave = { m ->
+                                serviceStore.saveMeta(m); serviceVersion++; serviceSettingsDialog = false; checkServiceNotifications()
+                            },
+                            onDismiss = { serviceSettingsDialog = false }
                         )
                     }
 
@@ -387,9 +429,12 @@ class AlfaMainActivity : ComponentActivity() {
                             ProDashboardScreen(
                                 values = obdValues,
                                 connected = obdConnected,
+                                darkTheme = resolveDark(),
                                 errorCodes = errorCodes,
+                                reportBusy = reportBusy,
                                 landscape = dashboardLandscape,
                                 onBack = { dashboardPro = false; ElmSession.extendedPids = false; setSystemBarIcons(lightIcons = resolveDark()) },
+                                onReport = { generateLiveReport() },
                                 onClose = { closeDashboard() }
                             )
                         } else {
@@ -416,7 +461,7 @@ class AlfaMainActivity : ComponentActivity() {
 
                 if (carsDialog) CarsDialog(
                     cars = carStore.all(), selectedCar = currentCar,
-                    onSelect = { car -> carStore.select(car.id); currentCar = carStore.selected(); carsDialog = false },
+                    onSelect = { car -> carStore.select(car.id); currentCar = carStore.selected(); carsDialog = false; checkServiceNotifications() },
                     onEdit = { car -> showCarEditor(car, false); carsDialog = false },
                     onDelete = { car -> deleteCar = car },
                     onAdd = { showCarEditor(carStore.create(), true); carsDialog = false },
@@ -503,6 +548,8 @@ class AlfaMainActivity : ComponentActivity() {
                     onCancel = { restoreConfirm = false }
                 )
 
+                if (reportBusy) ReportProgressDialog()
+
                 if (historyDialog) currentCar?.let { car ->
                     HistoryDialog(
                         carTitle = car.title(), records = remember(historyVersion) { recordStore.forCar(car.id) },
@@ -566,6 +613,7 @@ class AlfaMainActivity : ComponentActivity() {
         if (!accountStore.isRegistered) registerAccount() else refreshAccount()
         loadBackupInfo()
         autoBackupHandler.postDelayed(autoBackupRunnable, 4000)
+        window.decorView.postDelayed({ checkServiceNotifications() }, 1200)
     }
 
     private fun enterCarFlow() {
@@ -581,10 +629,18 @@ class AlfaMainActivity : ComponentActivity() {
     fun currentErrorRaw(): String = errorRaw
 
     fun currentJournalJson(): String {
-        val car = currentCar ?: return "[]"
+        val car = currentCar ?: return "{}"
+        val meta = serviceStore.meta(car)
         val arr = JSONArray()
         serviceStore.forCar(car.id).forEach { arr.put(it.toJson()) }
-        return arr.toString()
+        return JSONObject().apply {
+            put("currentMileage", meta.currentMileage)
+            put("currentDate", meta.currentDate)
+            put("toInterval", meta.toInterval)
+            put("oilInterval", meta.oilInterval)
+            put("categories", JSONArray(ServiceStore.KINDS))
+            put("entries", arr)
+        }.toString()
     }
 
     private fun appendLog(line: String) {
@@ -702,6 +758,8 @@ class AlfaMainActivity : ComponentActivity() {
         }
         val car = Car(state.carId, state.make.trim(), state.model.trim(), state.year.trim(), state.engine.trim(), state.fuel.trim(), state.transmission.trim(), state.drive.trim(), state.vin.trim(), state.mileage.trim(), state.notes.trim())
         carStore.save(car); carStore.select(car.id); currentCar = carStore.selected(); carEditor = null
+        serviceStore.ensureMeta(car)
+        checkServiceNotifications()
     }
 
     private fun fieldLabel(key: String) = when (key) {
@@ -1069,6 +1127,158 @@ class AlfaMainActivity : ComponentActivity() {
         }
     }
 
+    private fun generateLiveReport() {
+        val car = currentCar ?: run {
+            Toast.makeText(this, "Сначала выберите автомобиль", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (reportBusy) return
+        reportRequestedAt = System.currentTimeMillis()
+        reportValues = obdValues.copy()
+        reportBusy = true
+        DiagnosticApi.report(
+            car = car,
+            values = reportValues!!,
+            codes = errorCodes.toList(),
+            mil = obdValues.milOn,
+            dtcCount = obdValues.dtcCount,
+            accountToken = accountStore.token
+        ) { result ->
+            runOnUiThread {
+                reportBusy = false
+                result.onSuccess { documentJson -> saveLiveReportPdf(documentJson) }
+                    .onFailure { e ->
+                        Toast.makeText(this, "Не удалось сформировать отчёт: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+            }
+        }
+    }
+
+    private fun saveServiceBookPdf() {
+        val car = currentCar ?: return
+        try {
+            val meta = serviceStore.meta(car)
+            val entries = serviceStore.forCar(car.id)
+            val dues = serviceStore.dues(car)
+            val now = System.currentTimeMillis()
+            val renderer = ServiceBookPdfRenderer()
+            val doc = renderer.render(car, meta, dues, entries, now)
+            val name = "Сервисная книжка_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(now)) + ".pdf"
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, name)
+                put(MediaStore.Downloads.MIME_TYPE, "application/pdf")
+                put(MediaStore.Downloads.RELATIVE_PATH, "Download/Alfa Diagnostic/conclusions")
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: error("Не удалось создать PDF")
+            contentResolver.openOutputStream(uri)?.use { doc.writeTo(it) }
+                ?: error("Не удалось записать PDF")
+            doc.close()
+            contentResolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+            Toast.makeText(this, "PDF сохранён: Download/Alfa Diagnostic/conclusions/$name", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Ошибка PDF: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun saveLiveReportPdf(documentJson: String) {
+        try {
+            val renderer = ConclusionPdfRenderer()
+            val root = JSONObject(documentJson)
+            val whenMs = if (reportRequestedAt > 0L) reportRequestedAt else System.currentTimeMillis()
+            root.put("dateTime", SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(Date(whenMs)))
+            reportValues?.let { root.put("fileRows", obdReportRows(it)) }
+            ensureReportErrors(root)
+            val doc = if (root.optString("title").isNotBlank() || root.has("carRows") || root.optString("conclusion").isNotBlank()) {
+                renderer.render(root)
+            } else {
+                renderer.renderPlainText(documentJson)
+            }
+            val name = "Отчёт_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(whenMs)) + ".pdf"
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, name)
+                put(MediaStore.Downloads.MIME_TYPE, "application/pdf")
+                put(MediaStore.Downloads.RELATIVE_PATH, "Download/Alfa Diagnostic/conclusions")
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: error("Не удалось создать PDF")
+            contentResolver.openOutputStream(uri)?.use { doc.writeTo(it) }
+                ?: error("Не удалось записать PDF")
+            doc.close()
+            contentResolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
+            Toast.makeText(this, "Отчёт сохранён: Download/Alfa Diagnostic/conclusions/$name", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Ошибка PDF: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun obdReportRows(v: ObdValues): JSONArray {
+        val rows = JSONArray()
+        fun add(label: String, value: String) {
+            rows.put(JSONObject().put("label", label).put("value", value))
+        }
+        v.rpm?.let { add("Обороты", "${fmt0(it)} об/мин") }
+        v.speed?.let { add("Скорость", "${fmt0(it)} км/ч") }
+        v.load?.let { add("Нагрузка", "${fmt1(it)} %") }
+        v.throttle?.let { add("Дроссель", "${fmt1(it)} %") }
+        v.map?.let { add("MAP", "${fmt0(it)} кПа") }
+        v.coolant?.let { add("Температура ОЖ", "${fmt0(it)} °C") }
+        v.intake?.let { add("Температура впуска", "${fmt0(it)} °C") }
+        v.voltage?.let { add("Напряжение", "${fmt1(it)} В") }
+        v.maf?.let { add("MAF", "${fmt1(it)} г/с") }
+        v.ambient?.let { add("За бортом", "${fmt0(it)} °C") }
+        v.fuelSystem?.takeIf { it.isNotBlank() }?.let { add("Режим смеси", it) }
+        v.timing?.let { add("Угол зажигания", "${fmt1(it)} °") }
+        v.o2B1S1?.let { add("Лямбда B1S1", "${String.format(Locale.US, "%.2f", it)} В") }
+        v.o2B1S2?.let { add("Лямбда B1S2", "${String.format(Locale.US, "%.2f", it)} В") }
+        v.baro?.let { add("Атмосферное давление", "${fmt0(it)} кПа") }
+        v.railPressure?.let { add("Давление в рампе", "${fmt0(it)} кПа") }
+        v.oilTemp?.let { add("Температура масла", "${fmt0(it)} °C") }
+        v.catTemp?.let { add("Температура катализатора", "${fmt0(it)} °C") }
+        v.torque?.let { add("Крутящий момент", "${fmt0(it)} %") }
+        v.egr?.let { add("EGR", "${fmt0(it)} %") }
+        v.egrError?.let { add("Ошибка EGR", "${fmt1(it)} %") }
+        v.stft1?.let { add("STFT B1", "${fmt1(it)} %") }
+        v.ltft1?.let { add("LTFT B1", "${fmt1(it)} %") }
+        v.stft2?.let { add("STFT B2", "${fmt1(it)} %") }
+        v.ltft2?.let { add("LTFT B2", "${fmt1(it)} %") }
+        v.milOn?.let { add("Лампа Check Engine", if (it) "ВКЛ" else "ВЫКЛ") }
+        v.dtcCount?.let { add("Кодов по ЭБУ", it.toString()) }
+        return rows
+    }
+
+    private fun ensureReportErrors(root: JSONObject) {
+        val errors = root.optJSONArray("errors") ?: JSONArray()
+        val byCode = mutableMapOf<String, JSONObject>()
+        for (i in 0 until errors.length()) {
+            val o = errors.optJSONObject(i) ?: continue
+            byCode[o.optString("code").trim().uppercase(Locale.US)] = o
+        }
+        errorCodes.forEach { code ->
+            val key = code.trim().uppercase(Locale.US)
+            if (key.isBlank()) return@forEach
+            val existing = byCode[key]
+            if (existing == null) {
+                val o = JSONObject().apply {
+                    put("code", key)
+                    put("meaning", DtcCatalog.describe(key))
+                    put("cause", "Требуется проверка цепи и компонента по коду")
+                    put("remedy", "Проверить компонент и проводку, связанные с кодом")
+                }
+                errors.put(o)
+                byCode[key] = o
+            } else {
+                val meaning = existing.optString("meaning")
+                if (meaning.isBlank() || meaning.contains("требует уточнения", ignoreCase = true)) {
+                    existing.put("meaning", DtcCatalog.describe(key))
+                }
+            }
+        }
+        root.put("errors", errors)
+    }
+
     private fun openPdf(record: DiagnosticRecordStore.Record) {
         startActivity(Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(Uri.parse(record.aiResponseUri), "application/pdf")
@@ -1186,6 +1396,7 @@ class AlfaMainActivity : ComponentActivity() {
         when (request) {
             obdPermissionRequest -> if (results.all { it == PackageManager.PERMISSION_GRANTED }) { activeKind = "ble"; configureObd(); startObdBusy("Поиск адаптеров…", 12000); ble.scan(settingsPrefs.getString("last_obd", null)) }
             recordPermissionRequest -> if (results.all { it == PackageManager.PERMISSION_GRANTED }) startRecording()
+            notificationPermissionRequest -> if (results.all { it == PackageManager.PERMISSION_GRANTED }) checkServiceNotifications()
         }
     }
 
@@ -1209,7 +1420,7 @@ class AlfaMainActivity : ComponentActivity() {
     }
 
     private fun refreshKeepScreenOn() {
-        setKeepScreenOn(recording || dashboardOpen)
+        setKeepScreenOn(recording || (dashboardOpen && obdConnected))
     }
 
     private fun isSystemDark(): Boolean =
@@ -1231,6 +1442,64 @@ class AlfaMainActivity : ComponentActivity() {
         WindowCompat.getInsetsController(window, window.decorView).apply {
             isAppearanceLightStatusBars = !lightIcons
             isAppearanceLightNavigationBars = !lightIcons
+        }
+    }
+
+    private fun ensureNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= 26) {
+            val channel = NotificationChannel(
+                "service_due",
+                "Сервисные напоминания",
+                NotificationManager.IMPORTANCE_DEFAULT
+            ).apply { description = "Напоминания о ТО и замене масла" }
+            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
+        }
+    }
+
+    private fun notificationId(carId: String, kind: String): Int =
+        (carId.hashCode() * 31 + kind.hashCode()) and 0x7fffffff
+
+    private fun checkServiceNotifications() {
+        val car = currentCar ?: return
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
+
+        val manager = NotificationManagerCompat.from(this)
+        serviceStore.dues(car).forEach { due ->
+            val id = notificationId(car.id, due.kind)
+            val key = "notified_${car.id}_${due.kind}"
+            if (!due.dueSoon) {
+                manager.cancel(id)
+                settingsPrefs.edit().remove(key).apply()
+                return@forEach
+            }
+            if (settingsPrefs.getString(key, null) == due.nextMileage.toString()) return@forEach
+
+            val text = when (due.kind) {
+                "Замена масла" -> "Скоро замена масла: осталось ${due.remaining} км"
+                else -> "Скоро ТО: осталось ${due.remaining} км"
+            }
+            val intent = Intent(this, AlfaMainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val pending = PendingIntent.getActivity(
+                this, id, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val notification = NotificationCompat.Builder(this, "service_due")
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle("AlfaDiag — сервис")
+                .setContentText(text)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setAutoCancel(true)
+                .setContentIntent(pending)
+                .build()
+            try {
+                manager.notify(id, notification)
+                settingsPrefs.edit().putString(key, due.nextMileage.toString()).apply()
+            } catch (_: SecurityException) {
+            }
         }
     }
 
@@ -1398,7 +1667,6 @@ private fun MainScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 8.dp)
         ) {
-            Text("Alfa Diagnostic", color = MaterialTheme.colorScheme.primary, fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 14.dp))
             Text(carTitle, color = MaterialTheme.colorScheme.onBackground, fontSize = 24.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
             Row(Modifier.fillMaxWidth().padding(top = 10.dp)) {
                 Button(onClick = onChangeCar, modifier = Modifier.weight(1f)) { Text("Сменить") }
@@ -1432,7 +1700,7 @@ private fun MainScreen(
                     ) { Text("Отключить") }
                     savedLabel.isNotBlank() -> {
                         Button(onClick = onConnectSaved, enabled = carEnabled, modifier = Modifier.fillMaxWidth().padding(top = 14.dp)) { Text("Подключить: $savedLabel") }
-                        Button(onClick = onChooseNew, enabled = carEnabled, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Выбрать другой адаптер") }
+                        Button(onClick = onChooseNew, enabled = carEnabled, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onBackground), modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Выбрать другой адаптер") }
                     }
                     else -> Button(onClick = onChooseNew, enabled = carEnabled, modifier = Modifier.fillMaxWidth().padding(top = 14.dp)) { Text("Подключить ELM327") }
                 }
@@ -1452,11 +1720,12 @@ private fun MainScreen(
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onBackground),
                 modifier = Modifier.fillMaxWidth().padding(top = 14.dp)
             ) { Text("ПРИБОРНАЯ ПАНЕЛЬ") }
+            HorizontalDivider(Modifier.padding(top = 14.dp), color = MaterialTheme.colorScheme.surfaceVariant)
             Button(
                 onClick = onToggleRecord,
                 enabled = carEnabled,
                 colors = ButtonDefaults.buttonColors(containerColor = if (recording) DiagGreen else MaterialTheme.colorScheme.primary),
-                modifier = Modifier.fillMaxWidth().padding(top = 20.dp)
+                modifier = Modifier.fillMaxWidth().padding(top = 14.dp)
             ) { Text(if (recording) "ОСТАНОВИТЬ ЗАПИСЬ" else "НАЧАТЬ ЗАПИСЬ") }
             LinearProgressIndicator(
                 progress = { recordElapsedSec.coerceIn(0, 300) / 300f },
@@ -1726,7 +1995,7 @@ private fun AccountDialog(
                     onClick = onCreateCode,
                     enabled = !busy && !accountId.isNullOrBlank(),
                     modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onBackground)
                 ) { Text("Создать код переноса") }
                 if (transferCode != null) {
                     Spacer(Modifier.height(8.dp))
@@ -1779,12 +2048,12 @@ private fun AccountDialog(
                 Button(
                     onClick = onBackup,
                     modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onBackground)
                 ) { Text("Сохранить копию сейчас", fontSize = 14.sp) }
                 Button(
                     onClick = onRestore,
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onBackground)
                 ) { Text("Восстановить из копии", fontSize = 14.sp) }
                 Text(
                     "Копии создаются автоматически при запуске приложения и далее каждые 10 минут (хранятся 3 последние).",
@@ -1822,6 +2091,22 @@ private fun ThemeChoice(
     ) {
         Text(label, fontSize = 11.sp, maxLines = 1, textAlign = TextAlign.Center)
     }
+}
+
+@Composable
+private fun ReportProgressDialog() {
+    AlertDialog(
+        onDismissRequest = {},
+        title = { Text("Формирую отчёт") },
+        text = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
+                Spacer(Modifier.width(12.dp))
+                Text("ИИ анализирует параметры и ошибки…")
+            }
+        },
+        confirmButton = {}
+    )
 }
 
 @Composable
@@ -2025,42 +2310,110 @@ private fun RecordWarningDialog(noShow: Boolean, onNoShowChange: (Boolean) -> Un
 }
 
 @Composable
-private fun ServiceBookScreen(car: Car, entries: List<ServiceEntry>, hints: List<String>, onAdd: () -> Unit, onEdit: (ServiceEntry) -> Unit, onDelete: (ServiceEntry) -> Unit, onBack: () -> Unit) {
+private fun ServiceBookScreen(
+    car: Car,
+    entries: List<ServiceEntry>,
+    meta: ServiceMeta,
+    dues: List<ServiceDue>,
+    onAdd: () -> Unit,
+    onSavePdf: () -> Unit,
+    onEdit: (ServiceEntry) -> Unit,
+    onDelete: (ServiceEntry) -> Unit,
+    onUpdateMeta: () -> Unit,
+    onSettings: () -> Unit,
+    onBack: () -> Unit
+) {
     Surface(
         Modifier.fillMaxSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
         color = MaterialTheme.colorScheme.background
     ) {
         Column(Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 20.dp, vertical = 8.dp)) {
-            Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Сервисная книжка", fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                TextButton(onClick = onBack) { Text("Назад") }
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Сервисная книжка", fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                TextButton(onClick = onSettings) { Text("Настройки", fontSize = 13.sp) }
+                TextButton(onClick = onBack) { Text("Назад", fontSize = 13.sp) }
             }
-            Text(car.title(), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 16.sp, modifier = Modifier.padding(bottom = 8.dp))
-            Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())) {
-                if (hints.isNotEmpty()) {
-                    Text("Подсказки (ориентировочно)", fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.padding(bottom = 6.dp))
-                    hints.forEach { Text("• $it", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp, modifier = Modifier.padding(bottom = 4.dp)) }
-                    HorizontalDivider(Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+            Text(car.title(), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp, modifier = Modifier.padding(bottom = 8.dp))
+
+            Row(
+                Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp)).padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Текущий пробег", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("${meta.currentMileage} км", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    Text("на ${meta.currentDate}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                TextButton(onClick = onUpdateMeta) { Text("Обновить") }
+            }
+
+            dues.forEach { due ->
+                val bg = when {
+                    due.overdue -> DiagRed.copy(alpha = 0.12f)
+                    due.dueSoon -> Amber.copy(alpha = 0.16f)
+                    else -> MaterialTheme.colorScheme.surfaceVariant
+                }
+                val fg = when {
+                    due.overdue -> DiagRed
+                    due.dueSoon -> Amber
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                val text = when {
+                    due.overdue -> "ПРОСРОЧЕНО: ${due.kind} · на ${-due.remaining} км"
+                    due.dueSoon -> "Скоро ${due.kind.lowercase()} · осталось ${due.remaining} км"
+                    else -> "${due.kind} · следующее на ${due.nextMileage} км (осталось ${due.remaining} км)"
+                }
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 6.dp).background(bg, RoundedCornerShape(10.dp)).padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(ServiceStore.emoji(due.kind), fontSize = 18.sp)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text,
+                        color = fg,
+                        fontSize = 13.sp,
+                        fontWeight = if (due.overdue || due.dueSoon) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+            }
+
+            HorizontalDivider(Modifier.padding(vertical = 10.dp), color = MaterialTheme.colorScheme.surfaceVariant)
+            Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())) {
                 if (entries.isEmpty()) Text("Записей пока нет. Добавьте первую.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 entries.forEach { e ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f).clickable { onEdit(e) }) {
+                            Text("${ServiceStore.emoji(e.kind)} ${e.kind}", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                             val head = listOfNotNull(
-                                e.kind.ifBlank { null },
-                                e.mileage.ifBlank { null }?.let { "$it км" },
-                                e.date.ifBlank { null }
+                                e.date.ifBlank { null },
+                                e.mileage.ifBlank { null }?.let { "$it км" }
                             ).joinToString(" · ")
-                            if (head.isNotBlank()) Text(head, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                            if (e.title.isNotBlank()) Text(e.title, fontSize = 16.sp)
-                            if (e.note.isNotBlank()) Text(e.note, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+                            if (head.isNotBlank()) Text(head, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                            if (e.title.isNotBlank()) Text(e.title, fontSize = 15.sp)
+                            if (e.note.isNotBlank()) Text(e.note, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                         }
                         IconButton(onClick = { onDelete(e) }) { Icon(Icons.Filled.Delete, contentDescription = "Удалить", tint = DiagRed) }
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                 }
             }
-            Button(onClick = onAdd, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("+ Добавить запись") }
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = onAdd,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(vertical = 6.dp)
+                ) { Text("+ Добавить запись", fontSize = 13.sp, maxLines = 1) }
+                Button(
+                    onClick = onSavePdf,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.onBackground
+                    ),
+                    contentPadding = PaddingValues(vertical = 6.dp)
+                ) { Text("Сохранить", fontSize = 13.sp, maxLines = 1) }
+            }
         }
     }
 }
@@ -2077,19 +2430,118 @@ private fun ServiceEntryDialog(entry: ServiceEntry, onSave: (ServiceEntry) -> Un
         title = { Text(if (entry.title.isBlank() && entry.note.isBlank()) "Новая запись" else "Запись") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                OutlinedTextField(value = date, onValueChange = { date = it }, label = { Text("Дата (напр. 30.09.2026)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                DateField(value = date, onValueChange = { date = it }, label = "Дата (дд.мм.гггг)", modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(value = mileage, onValueChange = { mileage = it.filter { c -> c.isDigit() } }, label = { Text("Пробег, км") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
-                Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    ServiceStore.KINDS.forEach { k ->
-                        RadioButton(selected = kind == k, onClick = { kind = k })
-                        Text(k, modifier = Modifier.padding(end = 8.dp))
-                    }
+                Text("Категория", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
+                Row(Modifier.fillMaxWidth().padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    KindOption("ТО", kind, { kind = it }, Modifier.weight(1f))
+                    KindOption("Замена масла", kind, { kind = it }, Modifier.weight(1f))
                 }
-                OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Что сделано (кратко)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    KindOption("Ремонт", kind, { kind = it }, Modifier.weight(1f))
+                    KindOption("Прочее", kind, { kind = it }, Modifier.weight(1f))
+                }
+                OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Что сделано (кратко)") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
                 OutlinedTextField(value = note, onValueChange = { note = it }, label = { Text("Описание (необязательно)") }, minLines = 3, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
             }
         },
-        confirmButton = { TextButton(onClick = { onSave(entry.copy(date = date.trim(), mileage = mileage.trim(), kind = kind, title = title.trim(), note = note.trim())) }, enabled = title.isNotBlank() || note.isNotBlank()) { Text("Сохранить") } },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onSave(entry.copy(date = date.trim(), mileage = mileage.trim(), kind = kind, title = title.trim(), note = note.trim()))
+                },
+                enabled = mileage.isNotBlank() || title.isNotBlank() || note.isNotBlank()
+            ) { Text("Сохранить") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
+    )
+}
+
+@Composable
+private fun KindOption(kind: String, selected: String, onSelect: (String) -> Unit, modifier: Modifier = Modifier) {
+    Row(modifier.clickable { onSelect(kind) }, verticalAlignment = Alignment.CenterVertically) {
+        RadioButton(selected = selected == kind, onClick = { onSelect(kind) })
+        Text("${ServiceStore.emoji(kind)} $kind", fontSize = 12.sp, maxLines = 1)
+    }
+}
+
+@Composable
+private fun ServiceMileageDialog(meta: ServiceMeta, onSave: (ServiceMeta) -> Unit, onDismiss: () -> Unit) {
+    var mileage by remember { mutableStateOf(meta.currentMileage.toString()) }
+    var date by remember { mutableStateOf(meta.currentDate) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Текущий пробег") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = mileage,
+                    onValueChange = { mileage = it.filter { c -> c.isDigit() } },
+                    label = { Text("Пробег, км") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                DateField(
+                    value = date,
+                    onValueChange = { date = it },
+                    label = "Дата (дд.мм.гггг)",
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onSave(meta.copy(currentMileage = mileage.toIntOrNull() ?: 0, currentDate = date.trim()))
+            }) { Text("Сохранить") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
+    )
+}
+
+@Composable
+private fun ServiceSettingsDialog(meta: ServiceMeta, onSave: (ServiceMeta) -> Unit, onDismiss: () -> Unit) {
+    var to by remember { mutableStateOf(meta.toInterval.toString()) }
+    var oil by remember { mutableStateOf(meta.oilInterval.toString()) }
+    var threshold by remember { mutableStateOf(meta.notifyThreshold.toString()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Настройки сервиса") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = to,
+                    onValueChange = { to = it.filter { c -> c.isDigit() } },
+                    label = { Text("Пробег между ТО, км") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = oil,
+                    onValueChange = { oil = it.filter { c -> c.isDigit() } },
+                    label = { Text("Пробег между заменой масла, км") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+                )
+                OutlinedTextField(
+                    value = threshold,
+                    onValueChange = { threshold = it.filter { c -> c.isDigit() } },
+                    label = { Text("Порог уведомления, км") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onSave(
+                    meta.copy(
+                        toInterval = to.toIntOrNull()?.coerceAtLeast(100) ?: 15000,
+                        oilInterval = oil.toIntOrNull()?.coerceAtLeast(100) ?: 10000,
+                        notifyThreshold = threshold.toIntOrNull()?.coerceAtLeast(0) ?: 500
+                    )
+                )
+            }) { Text("Сохранить") }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
     )
 }
@@ -2138,7 +2590,7 @@ private fun HelpScreen(onClose: () -> Unit) {
             Spacer(Modifier.height(24.dp))
             Row(Modifier.fillMaxWidth()) {
                 if (step > 0) {
-                    Button(onClick = { step-- }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), modifier = Modifier.weight(1f)) { Text("Назад") }
+                    Button(onClick = { step-- }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onBackground), modifier = Modifier.weight(1f)) { Text("Назад") }
                     Spacer(Modifier.width(8.dp))
                 }
                 if (step < steps.lastIndex) Button(onClick = { step++ }, modifier = Modifier.weight(1f)) { Text("Далее") }

@@ -164,6 +164,70 @@ object DiagnosticApi {
         }
     }
 
+    fun report(
+        car: Car,
+        values: ObdValues,
+        codes: List<String>,
+        mil: Boolean?,
+        dtcCount: Int?,
+        accountToken: String?,
+        callback: (Result<String>) -> Unit
+    ) {
+        executor.execute {
+            try {
+                require(baseUrl.isNotBlank()) { "Адрес сервера диагностики не настроен в этой сборке" }
+                val valuesJson = JSONObject().apply {
+                    putOpt("rpm", values.rpm)
+                    putOpt("speed", values.speed)
+                    putOpt("load", values.load)
+                    putOpt("throttle", values.throttle)
+                    putOpt("map", values.map)
+                    putOpt("coolant", values.coolant)
+                    putOpt("intake", values.intake)
+                    putOpt("voltage", values.voltage)
+                    putOpt("maf", values.maf)
+                    putOpt("ambient", values.ambient)
+                    putOpt("fuelSystem", values.fuelSystem)
+                    putOpt("timing", values.timing)
+                    putOpt("o2B1S1", values.o2B1S1)
+                    putOpt("o2B1S2", values.o2B1S2)
+                    putOpt("baro", values.baro)
+                    putOpt("railPressure", values.railPressure)
+                    putOpt("oilTemp", values.oilTemp)
+                    putOpt("catTemp", values.catTemp)
+                    putOpt("milOn", values.milOn)
+                    putOpt("dtcCount", values.dtcCount)
+                    putOpt("torque", values.torque)
+                    putOpt("egr", values.egr)
+                    putOpt("egrError", values.egrError)
+                    putOpt("stft1", values.stft1)
+                    putOpt("ltft1", values.ltft1)
+                    putOpt("stft2", values.stft2)
+                    putOpt("ltft2", values.ltft2)
+                }
+                val body = JSONObject().apply {
+                    put("car", car.toJson())
+                    put("values", valuesJson)
+                    put("codes", JSONArray(codes))
+                    if (mil != null) put("mil", mil)
+                    if (dtcCount != null) put("dtcCount", dtcCount)
+                }
+                val c = (URL("$baseUrl/v1/report").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"; doOutput = true; connectTimeout = 15_000; readTimeout = 180_000
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    setRequestProperty("Accept", "application/json")
+                    applyHeaders(this)
+                    applyAccountHeader(this, accountToken)
+                }
+                c.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                val response = readResponse(c)
+                if (c.responseCode !in 200..299) error("Сервер: ${c.responseCode} $response")
+                val document = JSONObject(response).optJSONObject("document")
+                callback(Result.success(document?.toString() ?: response))
+            } catch (e: Exception) { callback(Result.failure(e)) }
+        }
+    }
+
     fun retry(id: String, callback: (Result<Unit>) -> Unit) {
         executor.execute {
             try {
