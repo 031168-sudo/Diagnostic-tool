@@ -113,6 +113,7 @@ func main() {
 	mux.Handle("GET /v1/diagnostics/{id}/conclusion.txt", srv.protect(http.HandlerFunc(srv.handleConclusion)))
 	mux.Handle("POST /v1/diagnostics/{id}/finalize", srv.protect(http.HandlerFunc(srv.handleFinalize)))
 	mux.Handle("POST /v1/diagnostics/{id}/retry", srv.protect(http.HandlerFunc(srv.handleRetry)))
+	mux.Handle("POST /v1/report", srv.protect(http.HandlerFunc(srv.handleReport)))
 	mux.Handle("GET /v1/vin/{vin}", srv.protect(http.HandlerFunc(srv.handleVIN)))
 	mux.Handle("POST /v1/account/register", srv.protect(http.HandlerFunc(srv.handleAccountRegister)))
 	mux.Handle("GET /v1/account/me", srv.protect(http.HandlerFunc(srv.handleAccountMe)))
