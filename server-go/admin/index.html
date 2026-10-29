@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Alfa Diagnostic — расходы ИИ</title>
+  <link rel="stylesheet" href="/admin/admin.css">
+  <script src="/admin/admin.js" defer></script>
+</head>
+<body>
+<header><div><small>ALFA DIAGNOSTIC / ADMIN</small><h1>Расходы на ИИ</h1></div><button id="logout" hidden>Выйти</button></header>
+<main>
+  <section id="login" class="panel">
+    <h2>Вход администратора</h2>
+    <p>Введите ADMIN_TOKEN сервера. Вход запоминается на 30 дней в защищённой cookie. Используйте HTTPS.</p>
+    <form id="login-form"><label>Токен<input id="token" type="password" autocomplete="off" required></label><button type="submit">Войти</button></form>
+  </section>
+  <div id="dashboard" hidden>
+    <section class="panel filters"><form id="filters">
+      <label>С даты (UTC)<input id="from" type="date" required></label>
+      <label>По дату включительно<input id="to" type="date" required></label>
+      <button type="submit">Обновить</button>
+    </form><p>Стоимость рассчитана по настроенным тарифам, не является счётом провайдера. Старые сессии без владельца — anonymous.</p></section>
+    <div id="summary" class="cards"></div>
+    <section class="panel"><h2>Все клиенты</h2><p>Все зарегистрированные аккаунты, включая клиентов без расходов. Расходы и вызовы — за выбранный период. Имена и контакты при регистрации не собираются.</p><label>Поиск по ID<input id="search" type="search" placeholder="ID аккаунта"></label><div id="accounts" class="scroll"></div></section>
+    <section id="detail" class="panel" hidden><h2 id="detail-title"></h2><div id="detail-summary" class="cards"></div><h3>По дням</h3><div id="days" class="scroll"></div><h3>По операциям</h3><div id="ops" class="scroll"></div><h3>По сессиям</h3><div id="sessions" class="scroll"></div></section>
+    <section class="panel"><h2>Текущие тарифы</h2><p id="prices"></p><p>Историческая стоимость сохраняется с версией тарифа и не меняется при обновлении цен.</p></section>
+  </div>
+  <p id="status" role="status" aria-live="polite"></p>
+</main>
+</body>
+</html>

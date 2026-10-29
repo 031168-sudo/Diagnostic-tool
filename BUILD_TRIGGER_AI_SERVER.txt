@@ -1,0 +1,1 @@
+Standalone diagnostic server configuration updated; external project endpoint removed.

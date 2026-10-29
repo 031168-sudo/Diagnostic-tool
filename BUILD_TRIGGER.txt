@@ -1,0 +1,1 @@
+Trigger a fresh GitHub Actions build for the diagnostic recorder.
